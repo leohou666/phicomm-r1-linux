@@ -1,0 +1,103 @@
+diff --git a/common/spl/spl.c b/common/spl/spl.c
+index 722b18c9..04b9ad1c 100644
+--- a/common/spl/spl.c
++++ b/common/spl/spl.c
+@@ -22,6 +22,7 @@
+ #include <spl_load.h>
+ #include <system-constants.h>
+ #include <asm/global_data.h>
++#include <asm/sections.h>
+ #include <asm-generic/gpio.h>
+ #include <nand.h>
+ #include <fat.h>
+@@ -48,6 +49,30 @@ DECLARE_BINMAN_MAGIC_SYM;
+ 
+ u32 *boot_params_ptr = NULL;
+ 
++#if defined(CONFIG_TARGET_PHICOMM_R1) && \
++	defined(CONFIG_DEBUG_UART_SKIP_INIT)
++#define R1_SPL_COMMON_MARK(ch) do { \
++	volatile u32 *uart = (volatile u32 *)0x11030000; \
++	while (!(uart[5] & (1U << 5))) \
++		; \
++	uart[0] = (ch); \
++} while (0)
++#define R1_SPL_COMMON_HEX32(value) do { \
++	volatile u32 *uart = (volatile u32 *)0x11030000; \
++	u32 v = (value); \
++	int i; \
++	for (i = 7; i >= 0; i--) { \
++		u32 n = (v >> (i * 4)) & 0xf; \
++		while (!(uart[5] & (1U << 5))) \
++			; \
++		uart[0] = n < 10 ? '0' + n : 'a' + n - 10; \
++	} \
++} while (0)
++#else
++#define R1_SPL_COMMON_MARK(ch) do { } while (0)
++#define R1_SPL_COMMON_HEX32(value) do { } while (0)
++#endif
++
+ #if CONFIG_IS_ENABLED(BINMAN_UBOOT_SYMBOLS)
+ /* See spl.h for information about this */
+ #if defined(CONFIG_SPL_BUILD)
+@@ -475,6 +500,7 @@ static int spl_common_init(bool setup_malloc)
+ {
+ 	int ret;
+ 
++	R1_SPL_COMMON_MARK('a');
+ #if CONFIG_IS_ENABLED(SYS_MALLOC_F)
+ 	if (setup_malloc) {
+ #ifdef CFG_MALLOC_F_ADDR
+@@ -484,6 +510,7 @@ static int spl_common_init(bool setup_malloc)
+ 		gd->malloc_ptr = 0;
+ 	}
+ #endif
++	R1_SPL_COMMON_MARK('b');
+ 	ret = bootstage_init(xpl_is_first_phase());
+ 	if (ret) {
+ 		debug("%s: Failed to set up bootstage: ret=%d\n", __func__,
+@@ -504,28 +531,43 @@ static int spl_common_init(bool setup_malloc)
+ 	}
+ #endif
+ 	if (CONFIG_IS_ENABLED(OF_REAL)) {
++		R1_SPL_COMMON_MARK('s');
++		if (*(volatile u32 *)__bss_end == 0xedfe0dd0)
++			R1_SPL_COMMON_MARK('m');
++		else {
++			R1_SPL_COMMON_MARK('n');
++			R1_SPL_COMMON_HEX32(*(volatile u32 *)__bss_end);
++		}
+ 		ret = fdtdec_setup();
+ 		if (ret) {
++			R1_SPL_COMMON_MARK('p');
+ 			debug("fdtdec_setup() returned error %d\n", ret);
+ 			return ret;
+ 		}
+ 	}
++	R1_SPL_COMMON_MARK('c');
+ 	if (CONFIG_IS_ENABLED(DM)) {
+ 		bootstage_start(BOOTSTAGE_ID_ACCUM_DM_SPL,
+ 				xpl_phase() == PHASE_TPL ? "dm tpl" : "dm_spl");
+ 		/* With CONFIG_SPL_OF_PLATDATA, bring in all devices */
+ 		ret = dm_init_and_scan(!CONFIG_IS_ENABLED(OF_PLATDATA));
++		R1_SPL_COMMON_MARK('d');
+ 		bootstage_accum(BOOTSTAGE_ID_ACCUM_DM_SPL);
+ 		if (ret) {
++			R1_SPL_COMMON_MARK('q');
+ 			debug("dm_init_and_scan() returned error %d\n", ret);
+ 			return ret;
+ 		}
+ 
+ 		ret = dm_autoprobe();
++		R1_SPL_COMMON_MARK('e');
++		if (ret)
++			R1_SPL_COMMON_MARK('r');
+ 		if (ret)
+ 			return ret;
+ 	}
+ 
++	R1_SPL_COMMON_MARK('f');
+ 	return 0;
+ }
+ 

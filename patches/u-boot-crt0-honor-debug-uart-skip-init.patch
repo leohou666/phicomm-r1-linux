@@ -1,0 +1,14 @@
+diff --git a/arch/arm/lib/crt0.S b/arch/arm/lib/crt0.S
+index c0a0a3a74d..d8d9753133 100644
+--- a/arch/arm/lib/crt0.S
++++ b/arch/arm/lib/crt0.S
+@@ -129,7 +129,9 @@ here:
+ 
+ #if defined(CONFIG_DEBUG_UART) && CONFIG_IS_ENABLED(SERIAL)
+ 	R1_UART_MARK 0x33	/* 3: before debug_uart_init */
++#if !defined(CONFIG_DEBUG_UART_SKIP_INIT)
+ 	bl	debug_uart_init
++#endif
+ 	R1_UART_MARK 0x34	/* 4: after debug_uart_init */
+ #endif
+ 

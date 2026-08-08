@@ -1,0 +1,74 @@
+diff --git a/common/spl/spl.c b/common/spl/spl.c
+index 722b18c9..d1c9452b 100644
+--- a/common/spl/spl.c
++++ b/common/spl/spl.c
+@@ -48,6 +48,18 @@ DECLARE_BINMAN_MAGIC_SYM;
+ 
+ u32 *boot_params_ptr = NULL;
+ 
++#if defined(CONFIG_TARGET_PHICOMM_R1) && \
++	defined(CONFIG_DEBUG_UART_SKIP_INIT)
++#define R1_SPL_COMMON_MARK(ch) do { \
++	volatile u32 *uart = (volatile u32 *)0x11030000; \
++	while (!(uart[5] & (1U << 5))) \
++		; \
++	uart[0] = (ch); \
++} while (0)
++#else
++#define R1_SPL_COMMON_MARK(ch) do { } while (0)
++#endif
++
+ #if CONFIG_IS_ENABLED(BINMAN_UBOOT_SYMBOLS)
+ /* See spl.h for information about this */
+ #if defined(CONFIG_SPL_BUILD)
+@@ -475,6 +487,7 @@ static int spl_common_init(bool setup_malloc)
+ {
+ 	int ret;
+ 
++	R1_SPL_COMMON_MARK('a');
+ #if CONFIG_IS_ENABLED(SYS_MALLOC_F)
+ 	if (setup_malloc) {
+ #ifdef CFG_MALLOC_F_ADDR
+@@ -484,6 +497,7 @@ static int spl_common_init(bool setup_malloc)
+ 		gd->malloc_ptr = 0;
+ 	}
+ #endif
++	R1_SPL_COMMON_MARK('b');
+ 	ret = bootstage_init(xpl_is_first_phase());
+ 	if (ret) {
+ 		debug("%s: Failed to set up bootstage: ret=%d\n", __func__,
+@@ -506,26 +520,34 @@ static int spl_common_init(bool setup_malloc)
+ 	if (CONFIG_IS_ENABLED(OF_REAL)) {
+ 		ret = fdtdec_setup();
+ 		if (ret) {
++			R1_SPL_COMMON_MARK('p');
+ 			debug("fdtdec_setup() returned error %d\n", ret);
+ 			return ret;
+ 		}
+ 	}
++	R1_SPL_COMMON_MARK('c');
+ 	if (CONFIG_IS_ENABLED(DM)) {
+ 		bootstage_start(BOOTSTAGE_ID_ACCUM_DM_SPL,
+ 				xpl_phase() == PHASE_TPL ? "dm tpl" : "dm_spl");
+ 		/* With CONFIG_SPL_OF_PLATDATA, bring in all devices */
+ 		ret = dm_init_and_scan(!CONFIG_IS_ENABLED(OF_PLATDATA));
++		R1_SPL_COMMON_MARK('d');
+ 		bootstage_accum(BOOTSTAGE_ID_ACCUM_DM_SPL);
+ 		if (ret) {
++			R1_SPL_COMMON_MARK('q');
+ 			debug("dm_init_and_scan() returned error %d\n", ret);
+ 			return ret;
+ 		}
+ 
+ 		ret = dm_autoprobe();
++		R1_SPL_COMMON_MARK('e');
++		if (ret)
++			R1_SPL_COMMON_MARK('r');
+ 		if (ret)
+ 			return ret;
+ 	}
+ 
++	R1_SPL_COMMON_MARK('f');
+ 	return 0;
+ }
+ 

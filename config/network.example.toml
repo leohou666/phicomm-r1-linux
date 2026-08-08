@@ -1,0 +1,23 @@
+[device]
+hostname = "phicomm-r1"
+
+[wifi]
+enabled = true
+ssid = "YOUR_WIFI_SSID"
+password = "YOUR_WIFI_PASSWORD"
+country = "CN"
+
+[bluetooth]
+enabled = true
+name = "Phicomm R1"
+pairable_seconds = 180
+auto_reconnect = true
+
+[airplay]
+enabled = true
+name = "Phicomm R1"
+airplay2 = false
+
+[audio]
+default_volume = 0.45
+preset = "default"

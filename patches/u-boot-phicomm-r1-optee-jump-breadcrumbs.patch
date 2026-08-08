@@ -1,0 +1,96 @@
+diff --git a/arch/arm/lib/spl.c b/arch/arm/lib/spl.c
+index bce51b9cc7d..0486612c2c1 100644
+--- a/arch/arm/lib/spl.c
++++ b/arch/arm/lib/spl.c
+@@ -20,6 +20,18 @@
+ #include <asm/armv7.h>
+ #endif
+ 
++#if defined(CONFIG_TARGET_PHICOMM_R1) && \
++	defined(CONFIG_DEBUG_UART_SKIP_INIT)
++#define R1_SPL_JUMP_MARK(ch) do { \
++	volatile u32 *uart = (volatile u32 *)0x11030000; \
++	while (!(uart[5] & (1U << 5))) \
++		; \
++	uart[0] = (ch); \
++} while (0)
++#else
++#define R1_SPL_JUMP_MARK(ch) do { } while (0)
++#endif
++
+ #ifndef CONFIG_SPL_DM
+ /* Pointer to as well as the global data structure for SPL */
+ DECLARE_GLOBAL_DATA_PTR;
+@@ -90,7 +102,9 @@ void __noreturn jump_to_image_linux(struct spl_image_info *spl_image)
+ void __noreturn jump_to_image_optee(struct spl_image_info *spl_image)
+ {
+ 	/* flush and turn off caches before jumping to OPTEE */
++	R1_SPL_JUMP_MARK('Q');
+ 	cleanup_before_linux();
++	R1_SPL_JUMP_MARK('R');
+ 
+ 	spl_optee_entry(NULL, NULL, spl_image->fdt_addr,
+ 			(void *)spl_image->entry_point);
+diff --git a/common/spl/spl.c b/common/spl/spl.c
+index d1c9452bfac..b1668dd5fe5 100644
+--- a/common/spl/spl.c
++++ b/common/spl/spl.c
+@@ -788,6 +788,7 @@ void board_init_r(gd_t *dummy1, ulong dummy2)
+ 	}
+ 
+ 	spl_perform_arch_fixups(&spl_image);
++	R1_SPL_COMMON_MARK('L');
+ 	spl_perform_board_fixups(&spl_image);
+ 
+ 	os = spl_image.os;
+@@ -799,7 +800,9 @@ void board_init_r(gd_t *dummy1, ulong dummy2)
+ 		jumper = &spl_invoke_atf;
+ 	} else if (CONFIG_IS_ENABLED(OPTEE_IMAGE) && os == IH_OS_TEE) {
+ 		debug("Jumping to U-Boot via OP-TEE\n");
++		R1_SPL_COMMON_MARK('M');
+ 		spl_board_prepare_for_optee(spl_image_fdt_addr(&spl_image));
++		R1_SPL_COMMON_MARK('N');
+ 		jumper = &jump_to_image_optee;
+ 	} else if (CONFIG_IS_ENABLED(OPENSBI) && os == IH_OS_OPENSBI) {
+ 		debug("Jumping to U-Boot via RISC-V OpenSBI\n");
+@@ -861,6 +864,7 @@ void board_init_r(gd_t *dummy1, ulong dummy2)
+ 	}
+ 
+ 	spl_board_prepare_for_boot();
++	R1_SPL_COMMON_MARK('O');
+ 
+ 	if (CONFIG_IS_ENABLED(RELOC_LOADER)) {
+ 		int ret;
+@@ -873,6 +877,7 @@ void board_init_r(gd_t *dummy1, ulong dummy2)
+ 		}
+ 	}
+ 
++	R1_SPL_COMMON_MARK('P');
+ 	jumper(&spl_image);
+ }
+ 
+diff --git a/common/spl/spl_optee.S b/common/spl/spl_optee.S
+index a3891f00713..a33de59aa29 100644
+--- a/common/spl/spl_optee.S
++++ b/common/spl/spl_optee.S
+@@ -6,8 +6,20 @@
+ #include <linux/linkage.h>
+ #include <asm/assembler.h>
+ 
++/* Phicomm R1 RAM-only OP-TEE entry breadcrumb (reuses 471-configured UART2). */
++	.macro R1_OPTEED_UART_MARK value
++	ldr	r12, =0x11030000
++.Lr1_opteed_uart_wait_\@:
++	ldr	r11, [r12, #0x14]
++	tst	r11, #0x20
++	beq	.Lr1_opteed_uart_wait_\@
++	mov	r11, #\value
++	str	r11, [r12]
++	.endm
++
+ ENTRY(spl_optee_entry)
+ 	ldr lr, =CONFIG_TEXT_BASE
+ 	ldr r1, =CONFIG_TEXT_BASE
++	R1_OPTEED_UART_MARK 0x54	/* T: last output before entering OP-TEE */
+ 	mov pc, r3
+ ENDPROC(spl_optee_entry)

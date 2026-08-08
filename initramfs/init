@@ -1,0 +1,35 @@
+#!/bin/busybox sh
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+exec </dev/console >/dev/console 2>&1
+
+echo
+echo "Phicomm R1 mainline rescue initramfs"
+echo "Mounting virtual filesystems..."
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mkdir -p /dev/pts /run /tmp
+mount -t devpts devpts /dev/pts 2>/dev/null
+
+echo
+uname -a
+echo
+echo "Kernel command line:"
+cat /proc/cmdline
+echo
+echo "Memory:"
+cat /proc/meminfo
+echo
+echo "Block devices:"
+cat /proc/partitions
+echo
+echo "No storage is mounted or modified by this initramfs."
+
+while true; do
+	echo
+	echo "Starting rescue shell on /dev/console. Type 'exit' to restart it."
+	/bin/sh
+done

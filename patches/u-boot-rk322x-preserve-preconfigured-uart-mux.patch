@@ -1,0 +1,14 @@
+diff --git a/arch/arm/mach-rockchip/rk322x/rk322x.c b/arch/arm/mach-rockchip/rk322x/rk322x.c
+--- a/arch/arm/mach-rockchip/rk322x/rk322x.c
++++ b/arch/arm/mach-rockchip/rk322x/rk322x.c
+@@ -17,6 +17,10 @@ void board_debug_uart_init(void)
+ {
+ #define GRF_BASE	0x11000000
+ 	static struct rk322x_grf * const grf = (void *)GRF_BASE;
++
++	if (IS_ENABLED(CONFIG_DEBUG_UART_SKIP_INIT))
++		return;
++
+ 	enum {
+ 		GPIO1B2_SHIFT		= 4,
+ 		GPIO1B2_MASK		= 3 << GPIO1B2_SHIFT,

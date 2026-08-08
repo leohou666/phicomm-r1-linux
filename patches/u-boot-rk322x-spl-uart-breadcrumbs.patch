@@ -1,0 +1,99 @@
+diff --git a/arch/arm/cpu/armv7/start.S b/arch/arm/cpu/armv7/start.S
+--- a/arch/arm/cpu/armv7/start.S
++++ b/arch/arm/cpu/armv7/start.S
+@@ -19,6 +19,17 @@
+ #include <asm/armv7.h>
+ #include <system-constants.h>
+ 
++/* Phicomm R1 RAM-only SPL diagnostic breadcrumbs. */
++	.macro R1_UART_MARK value
++	ldr	r12, =0x11030000
++.Lr1_uart_wait_\@:
++	ldr	r11, [r12, #0x14]
++	tst	r11, #0x20
++	beq	.Lr1_uart_wait_\@
++	mov	r11, #\value
++	str	r11, [r12]
++	.endm
++
+ /*************************************************************************
+  *
+  * Startup Code (reset vector)
+@@ -37,9 +48,11 @@
+ #endif
+ 
+ reset:
++	R1_UART_MARK 0x53	/* S: reset */
+ 	/* Allow the board to save important registers */
+ 	b	save_boot_params
+ save_boot_params_ret:
++	R1_UART_MARK 0x52	/* R: save_boot_params returned */
+ #ifdef CONFIG_POSITION_INDEPENDENT
+ 	/*
+ 	 * Fix .rela.dyn relocations. This allows U-Boot to loaded to and
+@@ -124,6 +137,7 @@ switch_to_hypervisor_ret:
+ #endif
+ #endif
+ 
++	R1_UART_MARK 0x4d	/* M: entering _main */
+ 	bl	_main
+ 
+ /*------------------------------------------------------------------------------*/
+diff --git a/arch/arm/lib/crt0.S b/arch/arm/lib/crt0.S
+--- a/arch/arm/lib/crt0.S
++++ b/arch/arm/lib/crt0.S
+@@ -11,6 +11,17 @@
+ #include <asm/assembler.h>
+ #include <system-constants.h>
+ 
++/* Phicomm R1 RAM-only SPL diagnostic breadcrumbs. */
++	.macro R1_UART_MARK value
++	ldr	r12, =0x11030000
++.Lr1_uart_wait_\@:
++	ldr	r11, [r12, #0x14]
++	tst	r11, #0x20
++	beq	.Lr1_uart_wait_\@
++	mov	r11, #\value
++	str	r11, [r12]
++	.endm
++
+ /*
+  * This file handles the target-independent stages of the U-Boot
+  * start-up where a C runtime environment is needed. Its entry point
+@@ -90,6 +101,7 @@ clbss_l:cmp	r0, r1			/* while not at end of BSS */
+  */
+ 
+ ENTRY(_main)
++	R1_UART_MARK 0x30	/* 0: _main */
+ 
+ /* Call arch_very_early_init before initializing C runtime environment. */
+ #if CONFIG_IS_ENABLED(ARCH_VERY_EARLY_INIT)
+@@ -107,14 +119,18 @@ ENTRY(_main)
+ #endif
+ 	bic	r0, r0, #7	/* 8-byte alignment for ABI compliance */
+ 	mov	sp, r0
++	R1_UART_MARK 0x31	/* 1: initial stack */
+ 	bl	board_init_f_alloc_reserve
+ 	mov	sp, r0
+ 	/* set up gd here, outside any C code */
+ 	mov	r9, r0
+ 	bl	board_init_f_init_reserve
++	R1_UART_MARK 0x32	/* 2: global data */
+ 
+ #if defined(CONFIG_DEBUG_UART) && CONFIG_IS_ENABLED(SERIAL)
++	R1_UART_MARK 0x33	/* 3: before debug_uart_init */
+ 	bl	debug_uart_init
++	R1_UART_MARK 0x34	/* 4: after debug_uart_init */
+ #endif
+ 
+ #if defined(CONFIG_XPL_BUILD) && defined(CONFIG_SPL_EARLY_BSS)
+@@ -122,7 +138,9 @@ ENTRY(_main)
+ #endif
+ 
+ 	mov	r0, #0
++	R1_UART_MARK 0x35	/* 5: before board_init_f */
+ 	bl	board_init_f
++	R1_UART_MARK 0x36	/* 6: after board_init_f */
+ 
+ #if ! defined(CONFIG_XPL_BUILD)
+ 

@@ -1,0 +1,32 @@
+# Extracted proprietary or board-specific firmware
+firmware/*.bin
+firmware/*.fw
+firmware/*.hcd
+firmware/*.txt
+firmware/*.clm_blob
+
+# Device dumps
+*.img
+*.dtb
+*.log
+*.tar
+*.gz
+
+# Build outputs
+build/
+out/
+output/
+
+# Device dumps and full-storage backups (never commit: eMMC images, partition
+# dumps, device-unique data, extracted vendor firmware)
+backup/
+
+# Vendored Rockchip tooling: its own git repo + proprietary rkbin blobs
+# (DDR/loader/TEE binaries) + local build objects
+rkdeveloptool/
+
+# Rockchip proprietary host tool binary
+upgrade_tool
+
+# Editor / IDE settings
+.vscode/

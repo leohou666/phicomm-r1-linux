@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Phicomm R1 bring-up <local>
+Date: Thu, 6 Aug 2026 14:30:00 +0800
+Subject: [PATCH] spl: optee: pass U-Boot text base in r1 for RK322x TEE
+
+The RK322x OP-TEE integration used by Armbian expects the non-secure
+U-Boot text base in r1 while SPL transfers control to the secure monitor.
+Keep the normal return address in lr as before.
+
+---
+ common/spl/spl_optee.S | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/common/spl/spl_optee.S b/common/spl/spl_optee.S
+index a269904d386..a3891f00713 100644
+--- a/common/spl/spl_optee.S
++++ b/common/spl/spl_optee.S
+@@ -8,5 +8,6 @@
+ 
+ ENTRY(spl_optee_entry)
+ 	ldr lr, =CONFIG_TEXT_BASE
++	ldr r1, =CONFIG_TEXT_BASE
+ 	mov pc, r3
+ ENDPROC(spl_optee_entry)
+-- 
+2.47.1

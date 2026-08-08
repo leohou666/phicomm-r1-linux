@@ -1,0 +1,16 @@
+diff --git a/arch/arm/mach-rockchip/bootrom.c b/arch/arm/mach-rockchip/bootrom.c
+--- a/arch/arm/mach-rockchip/bootrom.c
++++ b/arch/arm/mach-rockchip/bootrom.c
+@@ -63,6 +63,7 @@ static bool check_back_to_brom_dnl_flag(void)
+  * so this can safely be implemented in C (providing a single
+  * implementation both for ARMv7 and AArch64).
+  */
++#if CONFIG_IS_ENABLED(ROCKCHIP_BACK_TO_BROM)
+ int save_boot_params(void)
+ {
+ 	int  ret = setjmp(brom_ctx);
+@@ -107,3 +108,4 @@ int save_boot_params(void)
+ 
+ 	return ret;
+ }
++#endif

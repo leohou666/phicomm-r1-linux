@@ -1,0 +1,113 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+
+/dts-v1/;
+
+/*
+ * Diagnostic DT for separating the CPU/interrupt/timer path from the full
+ * upstream rk322x.dtsi.  Addresses, interrupt numbers, PSCI function IDs and
+ * timer shape follow the recovered vendor DT.  No storage is described.
+ */
+
+/ {
+	model = "Phicomm R1 minimal SMP diagnostic";
+	compatible = "phicomm,r1", "rockchip,rk3229";
+	#address-cells = <1>;
+	#size-cells = <1>;
+	interrupt-parent = <&gic>;
+
+	aliases {
+		serial2 = &uart2;
+	};
+
+	chosen {
+		stdout-path = "serial2:1500000n8";
+	};
+
+	memory@60000000 {
+		device_type = "memory";
+		reg = <0x60000000 0x20000000>;
+	};
+
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		ramoops@7bf00000 {
+			compatible = "ramoops";
+			reg = <0x7bf00000 0x00100000>;
+			record-size = <0x00020000>;
+			console-size = <0x00020000>;
+			ftrace-size = <0x00080000>;
+			flags = <1>;
+		};
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu0: cpu@f00 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a7";
+			reg = <0xf00>;
+			enable-method = "psci";
+		};
+
+		cpu1: cpu@f01 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a7";
+			reg = <0xf01>;
+			enable-method = "psci";
+		};
+
+		cpu2: cpu@f02 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a7";
+			reg = <0xf02>;
+			enable-method = "psci";
+		};
+
+		cpu3: cpu@f03 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a7";
+			reg = <0xf03>;
+			enable-method = "psci";
+		};
+	};
+
+	psci {
+		compatible = "arm,psci";
+		method = "smc";
+		cpu_suspend = <0x84000001>;
+		cpu_off = <0x84000002>;
+		cpu_on = <0x84000003>;
+	};
+
+	gic: interrupt-controller@32010000 {
+		compatible = "arm,cortex-a15-gic";
+		interrupt-controller;
+		#interrupt-cells = <3>;
+		#address-cells = <0>;
+		reg = <0x32011000 0x1000>,
+		      <0x32012000 0x1000>;
+	};
+
+	timer {
+		compatible = "arm,armv7-timer";
+		interrupts = <1 13 0xf04>,
+		             <1 14 0xf04>;
+		clock-frequency = <24000000>;
+	};
+
+	uart2: serial@11030000 {
+		compatible = "snps,dw-apb-uart";
+		reg = <0x11030000 0x100>;
+		interrupts = <0 57 4>;
+		clock-frequency = <24000000>;
+		current-speed = <1500000>;
+		reg-shift = <2>;
+		reg-io-width = <4>;
+		status = "okay";
+	};
+};

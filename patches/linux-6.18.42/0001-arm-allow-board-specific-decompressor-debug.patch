@@ -1,0 +1,26 @@
+From: Phicomm R1 Linux bring-up <noreply@example.invalid>
+Subject: [PATCH] ARM: allow board-specific decompressor debug on multiplatform
+
+The R1 bring-up kernel is a board-specific multiplatform image. Allow its
+fixed 8250 debug UART to report whether execution reaches and completes the
+zImage decompressor. This is a temporary bring-up diagnostic, not a portable
+multiplatform default.
+
+---
+ arch/arm/Kconfig.debug | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/arch/arm/Kconfig.debug b/arch/arm/Kconfig.debug
+index 6ea7d5f7f0c3..e918009a42a6 100644
+--- a/arch/arm/Kconfig.debug
++++ b/arch/arm/Kconfig.debug
+@@ -1806,7 +1806,6 @@ config DEBUG_UART_8250_PALMCHIP
+ 
+ config DEBUG_UNCOMPRESS
+ 	bool "Enable decompressor debugging via DEBUG_LL output"
+-	depends on !ARCH_MULTIPLATFORM
+ 	depends on !(ARCH_FOOTBRIDGE || ARCH_RPC || ARCH_SA1100)
+ 	depends on DEBUG_LL && !DEBUG_OMAP2PLUS_UART && \
+ 		     (!DEBUG_TEGRA_UART || !ZBOOT_ROM) && \
+-- 
+2.39.5

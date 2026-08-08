@@ -1,0 +1,78 @@
+diff --git a/arch/arm/mach-rockchip/spl.c b/arch/arm/mach-rockchip/spl.c
+index e989c148..696c9b0d 100644
+--- a/arch/arm/mach-rockchip/spl.c
++++ b/arch/arm/mach-rockchip/spl.c
+@@ -22,6 +22,21 @@
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+ 
++#if defined(CONFIG_TARGET_PHICOMM_R1) && \
++	defined(CONFIG_DEBUG_UART_SKIP_INIT)
++#define R1_SPL_UART_BASE	0x11030000
++#define R1_SPL_UART_LSR		5
++#define R1_SPL_UART_THRE	BIT(5)
++#define R1_SPL_MARK(ch) do { \
++	volatile u32 *uart = (volatile u32 *)R1_SPL_UART_BASE; \
++	while (!(uart[R1_SPL_UART_LSR] & R1_SPL_UART_THRE)) \
++		; \
++	uart[0] = (ch); \
++} while (0)
++#else
++#define R1_SPL_MARK(ch) do { } while (0)
++#endif
++
+ int board_return_to_bootrom(struct spl_image_info *spl_image,
+ 			    struct spl_boot_device *bootdev)
+ {
+@@ -111,30 +126,41 @@ void board_init_f(ulong dummy)
+ {
+ 	int ret;
+ 
++	R1_SPL_MARK('A');
+ 	board_early_init_f();
++	R1_SPL_MARK('B');
+ 
+ 	ret = spl_early_init();
++	R1_SPL_MARK('C');
+ 	if (ret) {
++		R1_SPL_MARK('X');
+ 		printf("spl_early_init() failed: %d\n", ret);
+ 		hang();
+ 	}
+ 	arch_cpu_init();
++	R1_SPL_MARK('D');
+ 
+ 	rockchip_stimer_init();
++	R1_SPL_MARK('E');
+ 
+ #ifdef CONFIG_SYS_ARCH_TIMER
+ 	/* Init ARM arch timer in arch/arm/cpu/armv7/arch_timer.c */
+ 	timer_init();
++	R1_SPL_MARK('F');
+ #endif
+ #if !defined(CONFIG_TPL) || defined(CONFIG_SPL_RAM)
+ 	debug("\nspl:init dram\n");
+ 	ret = dram_init();
++	R1_SPL_MARK('G');
+ 	if (ret) {
++		R1_SPL_MARK('Y');
+ 		printf("DRAM init failed: %d\n", ret);
+ 		return;
+ 	}
+ 	gd->ram_top = gd->ram_base + get_effective_memsize();
++	R1_SPL_MARK('H');
+ 	gd->ram_top = board_get_usable_ram_top(gd->ram_size);
++	R1_SPL_MARK('I');
+ 
+ 	if (IS_ENABLED(CONFIG_ARM64) && !CONFIG_IS_ENABLED(SYS_DCACHE_OFF)) {
+ 		gd->relocaddr = gd->ram_top;
+@@ -142,7 +168,9 @@ void board_init_f(ulong dummy)
+ 		enable_caches();
+ 	}
+ #endif
++	R1_SPL_MARK('J');
+ 	preloader_console_init();
++	R1_SPL_MARK('K');
+ }
+ 
+ void spl_board_prepare_for_boot(void)
