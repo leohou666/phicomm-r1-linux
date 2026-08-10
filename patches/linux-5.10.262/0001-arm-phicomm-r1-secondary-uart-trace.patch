@@ -1,0 +1,348 @@
+diff --git a/arch/arm/Kconfig.debug b/arch/arm/Kconfig.debug
+index dd1cf7035..3f3dffbeb 100644
+--- a/arch/arm/Kconfig.debug
++++ b/arch/arm/Kconfig.debug
+@@ -1954,6 +1954,22 @@ config EARLY_PRINTK
+ 	  kernel low-level debugging functions. Add earlyprintk to your
+ 	  kernel parameters to enable this console.
+ 
++config PHICOMM_R1_SECONDARY_UART_TRACE
++	bool "Phicomm R1 secondary CPU UART breadcrumbs"
++	depends on DEBUG_LL && DEBUG_LL_UART_8250
++	help
++	  Emit A through R from the ARM secondary CPU startup path. Lower-case
++	  a/s/t/b/w/x/o/p mark CPU0's PSCI CPU_ON call and completion-wait return.
++	  With this diagnostic enabled, CPU0 polls the completion rather than
++	  sleeping, solely to isolate wakeup/IRQ failures during bring-up. It also
++	  emits S-V around the CPU1 hotplug-idle completion and y/z around CPU0's
++	  corresponding wait, then 0-3 around CPU0 hotplug-thread activation and
++	  i/j/k around a CPU1 reschedule IPI send/receive/return.
++	  A-D use DEBUG_UART_PHYS before the MMU is enabled; E uses
++	  DEBUG_UART_VIRT after the MMU transition. This is solely a local
++	  RK3229/OP-TEE bring-up diagnostic and must stay disabled for normal
++	  kernels.
++
+ config ARM_KPROBES_TEST
+ 	tristate "Kprobes test module"
+ 	depends on KPROBES && MODULES
+diff --git a/arch/arm/kernel/head.S b/arch/arm/kernel/head.S
+index 4af5c7679..0d220f215 100644
+--- a/arch/arm/kernel/head.S
++++ b/arch/arm/kernel/head.S
+@@ -24,6 +24,26 @@
+ #include CONFIG_DEBUG_LL_INCLUDE
+ #endif
+ 
++#ifdef CONFIG_PHICOMM_R1_SECONDARY_UART_TRACE
++	/* r0/r1 are scratch at all trace sites below. */
++	.macro	r1_secondary_trace_phys, value
++	ldr	r0, =CONFIG_DEBUG_UART_PHYS
++	mov	r1, #\value
++	str	r1, [r0]
++	.endm
++
++	.macro	r1_secondary_trace_virt, value
++	ldr	r0, =CONFIG_DEBUG_UART_VIRT
++	mov	r1, #\value
++	str	r1, [r0]
++	.endm
++#else
++	.macro	r1_secondary_trace_phys, value
++	.endm
++	.macro	r1_secondary_trace_virt, value
++	.endm
++#endif
++
+ /*
+  * swapper_pg_dir is the virtual address of the initial page table.
+  * We place the page tables 16K below KERNEL_RAM_VADDR.  Therefore, we must
+@@ -375,10 +395,12 @@ ENTRY(secondary_startup)
+ 
+  ARM_BE8(setend	be)				@ ensure we are in BE8 mode
+ 
++	r1_secondary_trace_phys	'A'
+ #ifdef CONFIG_ARM_VIRT_EXT
+ 	bl	__hyp_stub_install_secondary
+ #endif
+ 	safe_svcmode_maskall r9
++	r1_secondary_trace_phys	'B'
+ 
+ 	mrc	p15, 0, r9, c0, c0		@ get processor id
+ 	bl	__lookup_processor_type
+@@ -387,6 +409,7 @@ ENTRY(secondary_startup)
+  THUMB( it	eq )		@ force fixup-able long branch encoding
+ 	beq	__error_p
+ 
++	r1_secondary_trace_phys	'C'
+ 	/*
+ 	 * Use the page tables supplied from  __cpu_up.
+ 	 */
+@@ -400,6 +423,7 @@ ARM_BE8(eor	r5, r4, r5)			@ it can be done in 3 steps
+ ARM_BE8(eor	r4, r4, r5)			@ without using a temp reg.
+ 	ldr	r8, [r3, #8]			@ get secondary_data.swapper_pg_dir
+ 	badr	lr, __enable_mmu		@ return address
++	r1_secondary_trace_phys	'D'
+ 	mov	r13, r12			@ __secondary_switched address
+ 	ldr	r12, [r10, #PROCINFO_INITFUNC]
+ 	add	r12, r12, r10			@ initialise processor
+@@ -412,6 +436,7 @@ ENDPROC(secondary_startup_arm)
+ 	 * r6  = &secondary_data
+ 	 */
+ ENTRY(__secondary_switched)
++	r1_secondary_trace_virt	'E'
+ 	ldr	sp, [r7, #12]			@ get secondary_data.stack
+ 	mov	fp, #0
+ 	b	secondary_start_kernel
+diff --git a/arch/arm/kernel/psci_smp.c b/arch/arm/kernel/psci_smp.c
+index d4392e177..b86169efc 100644
+--- a/arch/arm/kernel/psci_smp.c
++++ b/arch/arm/kernel/psci_smp.c
+@@ -42,11 +42,28 @@
+ 
+ extern void secondary_startup(void);
+ 
++#ifdef CONFIG_PHICOMM_R1_SECONDARY_UART_TRACE
++static __always_inline void r1_psci_trace(char marker)
++{
++	*(volatile u32 *)CONFIG_DEBUG_UART_VIRT = marker;
++}
++#else
++static __always_inline void r1_psci_trace(char marker)
++{
++}
++#endif
++
+ static int psci_boot_secondary(unsigned int cpu, struct task_struct *idle)
+ {
+-	if (psci_ops.cpu_on)
+-		return psci_ops.cpu_on(cpu_logical_map(cpu),
+-					virt_to_idmap(&secondary_startup));
++	int ret;
++
++	if (psci_ops.cpu_on) {
++		r1_psci_trace('s');
++		ret = psci_ops.cpu_on(cpu_logical_map(cpu),
++					     virt_to_idmap(&secondary_startup));
++		r1_psci_trace('t');
++		return ret;
++	}
+ 	return -ENODEV;
+ }
+ 
+diff --git a/arch/arm/kernel/smp.c b/arch/arm/kernel/smp.c
+index 8aa7fa949..a4ad249de 100644
+--- a/arch/arm/kernel/smp.c
++++ b/arch/arm/kernel/smp.c
+@@ -58,6 +58,18 @@
+  */
+ struct secondary_data secondary_data;
+ 
++#ifdef CONFIG_PHICOMM_R1_SECONDARY_UART_TRACE
++/* The early DEBUG_LL virtual UART mapping is live by secondary_start_kernel. */
++static __always_inline void r1_secondary_trace(char marker)
++{
++	*(volatile u32 *)CONFIG_DEBUG_UART_VIRT = marker;
++}
++#else
++static __always_inline void r1_secondary_trace(char marker)
++{
++}
++#endif
++
+ enum ipi_msg_type {
+ 	IPI_WAKEUP,
+ 	IPI_TIMER,
+@@ -158,14 +170,30 @@ int __cpu_up(unsigned int cpu, struct task_struct *idle)
+ 	/*
+ 	 * Now bring the CPU into our world.
+ 	 */
++	r1_secondary_trace('a');
+ 	ret = smp_ops.smp_boot_secondary(cpu, idle);
++	r1_secondary_trace('b');
+ 	if (ret == 0) {
+ 		/*
+ 		 * CPU was successfully started, wait for it
+ 		 * to come online or time out.
+ 		 */
++		/*
++		 * Diagnostic only: CPU1 has been observed to execute complete(),
++		 * while CPU0 never returns from the sleeping completion wait. Keep
++		 * CPU0 runnable and consume the same completion without scheduler or
++		 * wakeup-IPI involvement.
++		 */
++#ifdef CONFIG_PHICOMM_R1_SECONDARY_UART_TRACE
++		r1_secondary_trace('w');
++		while (!try_wait_for_completion(&cpu_running))
++			cpu_relax();
++		r1_secondary_trace('x');
++#else
+ 		wait_for_completion_timeout(&cpu_running,
+ 						 msecs_to_jiffies(1000));
++#endif
++		r1_secondary_trace('o');
+ 
+ 		if (!cpu_online(cpu)) {
+ 			pr_crit("CPU%u: failed to come online\n", cpu);
+@@ -175,6 +203,7 @@ int __cpu_up(unsigned int cpu, struct task_struct *idle)
+ 		pr_err("CPU%u: failed to boot: %d\n", cpu, ret);
+ 	}
+ 
++	r1_secondary_trace('p');
+ 
+ 	memset(&secondary_data, 0, sizeof(secondary_data));
+ 	return ret;
+@@ -405,7 +434,9 @@ asmlinkage void secondary_start_kernel(void)
+ 	struct mm_struct *mm = &init_mm;
+ 	unsigned int cpu;
+ 
++	r1_secondary_trace('F');
+ 	secondary_biglittle_init();
++	r1_secondary_trace('G');
+ 
+ 	/*
+ 	 * The identity mapping is uncached (strongly ordered), so
+@@ -415,6 +446,7 @@ asmlinkage void secondary_start_kernel(void)
+ 	local_flush_bp_all();
+ 	enter_lazy_tlb(mm, current);
+ 	local_flush_tlb_all();
++	r1_secondary_trace('H');
+ 
+ 	/*
+ 	 * All kernel threads share the same mm context; grab a
+@@ -424,8 +456,10 @@ asmlinkage void secondary_start_kernel(void)
+ 	mmgrab(mm);
+ 	current->active_mm = mm;
+ 	cpumask_set_cpu(cpu, mm_cpumask(mm));
++	r1_secondary_trace('I');
+ 
+ 	cpu_init();
++	r1_secondary_trace('J');
+ 
+ #ifndef CONFIG_MMU
+ 	setup_vectors_base();
+@@ -441,8 +475,10 @@ asmlinkage void secondary_start_kernel(void)
+ 		smp_ops.smp_secondary_init(cpu);
+ 
+ 	notify_cpu_starting(cpu);
++	r1_secondary_trace('K');
+ 
+ 	ipi_setup(cpu);
++	r1_secondary_trace('L');
+ 
+ 	calibrate_delay();
+ 
+@@ -454,14 +490,20 @@ asmlinkage void secondary_start_kernel(void)
+ 	 * before we continue - which happens after __cpu_up returns.
+ 	 */
+ 	set_cpu_online(cpu, true);
++	r1_secondary_trace('M');
+ 
+ 	check_other_bugs();
+ 
+ 	complete(&cpu_running);
++	r1_secondary_trace('N');
+ 
++	r1_secondary_trace('O');
+ 	local_irq_enable();
++	r1_secondary_trace('P');
+ 	local_fiq_enable();
++	r1_secondary_trace('Q');
+ 	local_abt_enable();
++	r1_secondary_trace('R');
+ 
+ 	/*
+ 	 * OK, it's off to the idle thread for us
+@@ -649,7 +691,11 @@ static void do_handle_IPI(int ipinr)
+ #endif
+ 
+ 	case IPI_RESCHEDULE:
++		if (cpu == 1)
++			r1_secondary_trace('j');
+ 		scheduler_ipi();
++		if (cpu == 1)
++			r1_secondary_trace('k');
+ 		break;
+ 
+ 	case IPI_CALL_FUNC:
+@@ -747,6 +793,8 @@ void __init set_smp_ipi_range(int ipi_base, int n)
+ 
+ void smp_send_reschedule(int cpu)
+ {
++	if (cpu == 1)
++		r1_secondary_trace('i');
+ 	smp_cross_call(cpumask_of(cpu), IPI_RESCHEDULE);
+ }
+ 
+diff --git a/kernel/cpu.c b/kernel/cpu.c
+index 08c2b2e30..4042c463f 100644
+--- a/kernel/cpu.c
++++ b/kernel/cpu.c
+@@ -79,6 +79,17 @@ static DEFINE_PER_CPU(struct cpuhp_cpu_state, cpuhp_state) = {
+ 	.fail = CPUHP_INVALID,
+ };
+ 
++#ifdef CONFIG_PHICOMM_R1_SECONDARY_UART_TRACE
++static __always_inline void r1_cpuhp_trace(char marker)
++{
++	*(volatile u32 *)CONFIG_DEBUG_UART_VIRT = marker;
++}
++#else
++static __always_inline void r1_cpuhp_trace(char marker)
++{
++}
++#endif
++
+ #ifdef CONFIG_SMP
+ cpumask_t cpus_booted_once_mask;
+ #endif
+@@ -525,12 +536,22 @@ static int bringup_wait_for_ap(unsigned int cpu)
+ 	struct cpuhp_cpu_state *st = per_cpu_ptr(&cpuhp_state, cpu);
+ 
+ 	/* Wait for the CPU to reach CPUHP_AP_ONLINE_IDLE */
++	r1_cpuhp_trace('y');
++#ifdef CONFIG_PHICOMM_R1_SECONDARY_UART_TRACE
++	while (!try_wait_for_completion(&st->done_up))
++		cpu_relax();
++#else
+ 	wait_for_ap_thread(st, true);
++#endif
++	r1_cpuhp_trace('z');
+ 	if (WARN_ON_ONCE((!cpu_online(cpu))))
+ 		return -ECANCELED;
++	r1_cpuhp_trace('0');
+ 
+ 	/* Unpark the hotplug thread of the target cpu */
++	r1_cpuhp_trace('1');
+ 	kthread_unpark(st->thread);
++	r1_cpuhp_trace('2');
+ 
+ 	/*
+ 	 * SMT soft disabling on X86 requires to bring the CPU out of the
+@@ -545,6 +566,7 @@ static int bringup_wait_for_ap(unsigned int cpu)
+ 	if (st->target <= CPUHP_AP_ONLINE_IDLE)
+ 		return 0;
+ 
++	r1_cpuhp_trace('3');
+ 	return cpuhp_kick_ap(st, st->target);
+ }
+ 
+@@ -1235,15 +1257,19 @@ void cpuhp_online_idle(enum cpuhp_state state)
+ 	/* Happens for the boot cpu */
+ 	if (state != CPUHP_AP_ONLINE_IDLE)
+ 		return;
++	r1_cpuhp_trace('S');
+ 
+ 	/*
+ 	 * Unpart the stopper thread before we start the idle loop (and start
+ 	 * scheduling); this ensures the stopper task is always available.
+ 	 */
+ 	stop_machine_unpark(smp_processor_id());
++	r1_cpuhp_trace('T');
+ 
+ 	st->state = CPUHP_AP_ONLINE_IDLE;
++	r1_cpuhp_trace('U');
+ 	complete_ap_thread(st, true);
++	r1_cpuhp_trace('V');
+ }
+ 
+ /* Requires cpu_add_remove_lock to be held */

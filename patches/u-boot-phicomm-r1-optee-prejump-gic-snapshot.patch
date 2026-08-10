@@ -1,0 +1,103 @@
+diff --git a/arch/arm/lib/spl.c b/arch/arm/lib/spl.c
+--- a/arch/arm/lib/spl.c
++++ b/arch/arm/lib/spl.c
+@@ -20,16 +20,83 @@
+ #include <asm/armv7.h>
+ #endif
+ 
+-#if defined(CONFIG_TARGET_PHICOMM_R1) && \
+-	defined(CONFIG_DEBUG_UART_SKIP_INIT)
++#if defined(CONFIG_TARGET_PHICOMM_R1) && CONFIG_IS_ENABLED(OPTEE_IMAGE)
++static void r1_spl_uart_putc(u8 ch)
++{
++	volatile u32 *uart = (volatile u32 *)0x11030000;
++
++	while (!(uart[5] & (1U << 5)))
++		;
++	uart[0] = ch;
++}
++
++static void r1_spl_uart_hex8(u8 value)
++{
++	static const char hex[] = "0123456789abcdef";
++
++	r1_spl_uart_putc(hex[value >> 4]);
++	r1_spl_uart_putc(hex[value & 0xf]);
++}
++
++static void r1_spl_uart_hex32(u32 value)
++{
++	int shift;
++
++	for (shift = 28; shift >= 0; shift -= 4)
++		r1_spl_uart_putc("0123456789abcdef"[(value >> shift) & 0xf]);
++}
++
++static void r1_spl_gic_snapshot(char phase)
++{
++	volatile u32 *gicd = (volatile u32 *)0x32011000;
++	volatile u32 *gicc = (volatile u32 *)0x32012000;
++	u32 groups = (gicd[0x004 / 4] & 0x1f) + 1;
++	bool active = false;
++	u32 value;
++	u32 i;
++
++	r1_spl_uart_putc('\r');
++	r1_spl_uart_putc('\n');
++	r1_spl_uart_putc('{');
++	r1_spl_uart_putc('G');
++	r1_spl_uart_putc(phase);
++	r1_spl_uart_putc('R');
++	r1_spl_uart_hex32(gicc[0x014 / 4]);
++	r1_spl_uart_putc('C');
++	r1_spl_uart_hex32(gicc[0x000 / 4]);
++	r1_spl_uart_putc('M');
++	r1_spl_uart_hex32(gicc[0x004 / 4]);
++	r1_spl_uart_putc('I');
++	r1_spl_uart_hex32(gicd[0x080 / 4]);
++	for (i = 0; i < 4; i++) {
++		r1_spl_uart_putc('A');
++		r1_spl_uart_putc('0' + i);
++		r1_spl_uart_hex32(gicc[(0x0d0 / 4) + i]);
++	}
++	for (i = 0; i < groups; i++) {
++		value = gicd[(0x300 / 4) + i];
++		if (!value)
++			continue;
++		active = true;
++		r1_spl_uart_putc('V');
++		r1_spl_uart_hex8(i);
++		r1_spl_uart_hex32(value);
++	}
++	if (!active) {
++		r1_spl_uart_putc('V');
++		r1_spl_uart_putc('-');
++	}
++	r1_spl_uart_putc('}');
++	r1_spl_uart_putc('\r');
++	r1_spl_uart_putc('\n');
++}
++
+ #define R1_SPL_JUMP_MARK(ch) do { \
+-	volatile u32 *uart = (volatile u32 *)0x11030000; \
+-	while (!(uart[5] & (1U << 5))) \
+-		; \
+-	uart[0] = (ch); \
++	r1_spl_uart_putc(ch); \
+ } while (0)
+ #else
+ #define R1_SPL_JUMP_MARK(ch) do { } while (0)
++#define r1_spl_gic_snapshot(phase) do { } while (0)
+ #endif
+ 
+ #ifndef CONFIG_SPL_DM
+@@ -103,7 +170,9 @@ void __noreturn jump_to_image_optee(struct spl_image_info *spl_image)
+ {
+ 	/* flush and turn off caches before jumping to OPTEE */
+ 	R1_SPL_JUMP_MARK('Q');
++	r1_spl_gic_snapshot('B');
+ 	cleanup_before_linux();
++	r1_spl_gic_snapshot('A');
+ 	R1_SPL_JUMP_MARK('R');
+ 
+ 	spl_optee_entry(NULL, NULL, spl_image->fdt_addr,

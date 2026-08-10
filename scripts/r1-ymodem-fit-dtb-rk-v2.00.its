@@ -1,0 +1,49 @@
+/dts-v1/;
+
+/ {
+	description = "Phicomm R1 UART YMODEM FIT with Rockchip RK322x TEE v2.00";
+	#address-cells = <1>;
+
+	images {
+		u-boot {
+			description = "U-Boot proper with appended R1 DTB";
+			data = /incbin/("../build/u-boot/u-boot-dtb.bin");
+			type = "standalone";
+			arch = "arm";
+			os = "u-boot";
+			compression = "none";
+			load = <0x61000000>;
+			entry = <0x61000000>;
+		};
+
+		op-tee {
+			description = "Rockchip RK322x TEE v2.00";
+			data = /incbin/("../build/tee/rk322x_tee_v2.00.bin");
+			type = "tee";
+			arch = "arm";
+			os = "tee";
+			compression = "none";
+			load = <0x68400000>;
+			entry = <0x68400000>;
+		};
+
+		fdt-1 {
+			description = "R1 U-Boot DTB for TEE";
+			data = /incbin/("../build/u-boot/u-boot.dtb");
+			type = "flat_dt";
+			compression = "none";
+		};
+	};
+
+	configurations {
+		default = "config-1";
+
+		config-1 {
+			description = "Phicomm R1 Rockchip TEE v2.00 A/B";
+			firmware = "op-tee";
+			loadables = "u-boot";
+			fdt = "fdt-1";
+			compatible = "phicomm,r1", "rockchip,rk3229";
+		};
+	};
+};

@@ -267,7 +267,51 @@ SPL 和 TPL 两份，加东西要加阶段守卫
 （`#if defined(CONFIG_SPL_BUILD) && !defined(CONFIG_TPL_BUILD)`）。exit 0 但 472
 时间戳没变 = binman 没重跑。
 
-## 10. 工具速查表
+## 10. clangd：同时浏览 6.18 与 5.10 内核源码
+
+内核的 include 路径和配置生成头文件位于独立 `O=` 输出目录，不能用手写
+`compile_flags.txt` 代替。本项目用 Kbuild 实际生成的 `.cmd` 文件产生数据库，不重新编译内核：
+
+```sh
+scripts/generate-clangd.sh all     # 同时刷新 6.18 与 5.10
+scripts/generate-clangd.sh 6.18    # 仅主线目标
+scripts/generate-clangd.sh 5.10    # 仅 SMP 对照树
+```
+
+输出为 `build/kernel/compile_commands.json`（6.18）和
+`build/kernel-5.10/compile_commands.json`（5.10）。各自源码根的本地 `.clangd` 指向相邻
+输出目录，并设定 `/usr/bin/arm-none-eabi-gcc`。`scripts/build-kernel.sh` 现在每次成功构建后
+默认刷新对应数据库；传入 `GENERATE_COMPILE_COMMANDS=0` 可跳过。
+
+验证：
+
+```sh
+clangd --check=build/kernel-src/arch/arm/kernel/smp.c
+clangd --check=build/kernel-src-5.10/arch/arm/kernel/smp.c
+```
+
+输出应含 `Compile command from CDB` 和 `--target=arm-none-eabi`。
+
+编辑器 UI 的 Call Hierarchy 不便归档时，使用同一 clangd LSP 接口的文本导出器：
+
+```sh
+# 谁会调用它：输出从目标函数向上回溯的静态调用树
+scripts/clangd-call-tree.py \
+  build/kernel-src/kernel/cpu.c bringup_nonboot_cpus \
+  --direction incoming --depth 5 > /tmp/bringup-callers.md
+
+# 它会调用什么：向下展开
+scripts/clangd-call-tree.py \
+  build/kernel-src/kernel/cpu.c bringup_nonboot_cpus \
+  --direction outgoing --depth 3 > /tmp/bringup-callees.md
+```
+
+前一条在当前 6.18 树的实测输出为
+`start_kernel → rest_init → kernel_init → kernel_init_freeable → smp_init → bringup_nonboot_cpus`。
+它是静态 source-level call hierarchy，不表示某次运行时栈，也不会把函数指针或汇编跳转伪装成
+直接调用。
+
+## 11. 工具速查表
 
 | 工具 | 场景 | 关键用法 |
 |---|---|---|
@@ -285,8 +329,10 @@ SPL 和 TPL 两份，加东西要加阶段守卫
 | `git apply --check`/`git worktree` | 补丁链重放 | `diff -rq` 全树比对 |
 | `make ... > log` | 构建排错 | 信产物不信输出；检查完整日志 |
 | `curl -fsSL`（固定 commit） | 外部 blob 来源固定 | 取回后必须验 SHA |
+| `scripts/generate-clangd.sh` | 内核源码跳转/补全 | 从 Kbuild `.cmd` 生成 6.18/5.10 的 `compile_commands.json` |
+| `scripts/clangd-call-tree.py` | 可复制的调用层级 | 通过 clangd LSP 导出 incoming/outgoing Markdown 树 |
 
-## 11. 工具链与环境备注
+## 12. 工具链与环境备注
 
 - 交叉工具链：Fedora 自带 `arm-none-eabi-gcc 15.2.0`（`CROSS_COMPILE=arm-none-eabi-`）；
 - 主机 Python：`pyelftools==0.31`（U-Boot binman 需要）、`pylibfdt`（FIT 验证）；

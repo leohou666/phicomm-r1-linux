@@ -82,5 +82,14 @@ make -C "$kernel_src" O="$kernel_build" \
 cp "$kernel_build/arch/arm/boot/zImage" "$artifacts/zImage"
 cp "$kernel_build/.config" "$artifacts/kernel.config"
 
+if [ "${GENERATE_COMPILE_COMMANDS:-1}" = 1 ]; then
+	python3 "$kernel_src/scripts/clang-tools/gen_compile_commands.py" \
+		-d "$kernel_build" \
+		-o "$kernel_build/compile_commands.json" \
+		-a "${AR:-${cross_compile}ar}" \
+		"$kernel_build"
+	printf 'clangd database written to %s/compile_commands.json\n' "$kernel_build"
+fi
+
 file "$artifacts/zImage" "$artifacts/rk3229-phicomm-r1.dtb"
 printf 'Artifacts written to %s\n' "$artifacts"

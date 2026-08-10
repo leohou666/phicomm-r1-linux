@@ -1,6 +1,6 @@
 # Phicomm R1 bring-up 交接记录
 
-更新时间：2026-08-07（Asia/Shanghai）
+更新时间：2026-08-10（Asia/Shanghai）
 
 本文用于把当前工作交给新的 Codex/开发者继续。它是工作现场摘要，不替代按时间保存全部证据的
 [`docs/reverse-engineering-journal.md`](docs/reverse-engineering-journal.md)。开始操作前必须先读
@@ -8,10 +8,10 @@
 
 ## 一句话状态
 
-R1 已经能通过真 MaskROM，把“原厂 DDR 471 + 主线 R1 SPL/U-Boot 472”完全从 RAM 启动；
-无 OP-TEE 时可进入现代 U-Boot，并以单核启动主线 Linux 到 BusyBox shell。当前正在把 Armbian
-提供的 RK322x 开源 OP-TEE 加入 RAM-only FIT，以恢复 PSCI/SMP。最后一个候选已经越过此前的
-FIT/FDT 错误，停在 SPL 完成架构 fixup、准备跳转 OP-TEE 的边界附近。
+R1 已通过真 MaskROM 完成“原厂 DDR 471 + 主线 R1 SPL/U-Boot 472 + 开源 RK322x OP-TEE
+3.7 + clean Linux 5.10.262”的纯 RAM 双核启动，并进入 BusyBox shell；用户实机确认 uptime
+超过 30 秒。冻结根因是 RockUSB 交接遗留 USB OTG INTID 55 active/APR0，板级 SPL 精确清理
+后 CPU0 IRQ/SGI 恢复。未写 eMMC。
 
 ## 当前目标
 
@@ -27,12 +27,12 @@ BootROM MaskROM
   -> 双核/四核主线 Linux
 ```
 
-近期验收标准不是“能打印更多字符”，而是：
+本阶段验收结果：
 
-1. 开源 OP-TEE 实际获得控制权并返回 U-Boot proper；
-2. 从该 RAM-only U-Boot 启动至少双核 Linux；
-3. uptime 超过原厂 Trust OS 路线稳定复现的约 30 秒冻结边界；
-4. 全程不执行任何存储写操作。
+1. [x] 开源 OP-TEE 实际获得控制权并返回 U-Boot proper；
+2. [x] 从该 RAM-only U-Boot 启动双核 clean Linux 到 shell；
+3. [x] 用户确认 uptime 超过约 30 秒冻结边界；保存日志直接记录到 8.99 秒；
+4. [x] 全程未执行存储写操作。
 
 ## 已验证事实
 
@@ -292,8 +292,12 @@ sudo ./rkdeveloptool/rkdeveloptool db \
 ## 安全边界
 
 - 当前阶段只授权只读检查、主机端构建和 RAM-only `db` 实验。
-- recovery/BCB 回滚已经验证，但“引导区全损坏后从真 MaskROM 完整恢复”仍未实测。
-- eMMC hardware boot0/boot1 尚未确认并备份。
+- recovery/BCB 回滚已经验证，但"引导区全损坏后从真 MaskROM 完整恢复"仍未实测。
+- eMMC hardware boot0/boot1 已于 2026-08-08 备份：`backup/boot/r1-emmc-boot0.img`、
+  `r1-emmc-boot1.img`（4 MiB 各，逐字节相同，SHA-256
+  `70b4abfd87fa2e201ce17ddbf6886009ac9e70c64d2cc09880f61bef5604fdb9`），
+  内含 Rockchip loader（"RK32" 段 ~59 KB）；BootROM 是否实际从 boot 分区启动
+  未直接验证。
 - 任何设备写入都必须重新核对 USB 设备、目标介质、offset、length、源镜像、备份和恢复流程，
   并取得针对具体命令和目标的明确授权。
 - 不公开提交 `backup/`、整盘/分区镜像、设备唯一数据、原厂 loader 或 OP-TEE binary。

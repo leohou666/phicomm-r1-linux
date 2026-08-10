@@ -460,3 +460,34 @@ R1 的首个开源 OP-TEE 候选已完成离线构建，产物为
 SHA-256 为 `7f617c52269e9fe4f29f6bcfa7716460e970363b646d70ac4021caf275174f0b`，
 FIT 中 OP-TEE 的 load/entry 均为 `0x68400000`。471/472/loader 解包后有效字节均与
 输入一致；该候选尚未上板，下一步仅执行 MaskROM `db`。
+
+### MaskROM/RockUSB 遗留 GIC active interrupt
+
+Linux 5.10 v7 实机显示 CPU0 的 GICC_RPR 从 GIC 初始化前直到等待 kthread completion 前始终为
+`0x00`，而 CPU1 为正常 idle 值 `0xff`。随后在仍处于 secure state、尚未进入 OP-TEE 的 SPL
+中读取 GIC，cache cleanup 前后的结果完全一致：GICC_APR0=`1`，所有 GICD_ISACTIVERn 中仅
+ISACTIVER1 bit 23 为 1，即 GIC INTID 55。上游 `rk322x.dtsi` 的 `usb@30040000` 使用
+`GIC_SPI 23`，换算后正是 INTID 55。已验证事实是异常早于 OP-TEE；“它由 MaskROM/RockUSB
+USB OTG 交付路径遗留”目前是与地址映射一致的最强推断，尚未用旧厂商链作同组寄存器对照。
+
+下一 RAM-only A/B 在 SPL 进入 TEE 前检查完整签名；仅当 RPR=`0`、APR0=`1` 且 INTID 55 是
+唯一 active 中断时，才屏蔽并清除它的 pending/active 状态、清 APR0，随后输出 `GC` 快照。
+任何签名差异都会跳过写操作。该试验不写 eMMC。
+
+实机 `GC` 得到 RPR=`0xff`、APR0–3 全零且 `V-`，证明精确清理成功。随后同一 v7 Linux
+在 CPU0 最早 GIC 快照即为 RPR=`0xff`/HPPIR=`0x3ff`，CPU1 online 后两核状态一致；此前
+持续 pending 的 PPI 30 已消失，CPU hotplug、kdevtmpfs 创建与 completion 均完成，日志跨过
+`devtmpfs: initialized` 并继续到 pinctrl、NET 与 DMA 初始化。因此旧停止点的因果链已经验证：
+INTID 55/APR0 遗留阻挡 CPU0 普通 IRQ，进而阻挡 CPU1→CPU0 调度 IPI和 completion 唤醒。
+
+为避免 v7 的逐字符路标、polling completion 和 SGI filter 干扰后续判断，已从未修改的
+Linux 5.10.262 commit `065a677fad98` 独立构建 clean v8。它保留同一 PSCI v1/GIC400 DT、
+initramfs 和 kernel command line，不包含上述诊断代码；下一实机标准是进入救援 shell并连续
+打印 uptime 超过 30 秒。
+
+clean v8 实机通过。启动日志确认镜像为无 `-dirty` 后缀的
+`Linux 5.10.262-phicomm-r1 #1`；PSCI v1.0 启动 CPU1 后打印 `Brought up 1 node, 2 CPUs`，
+正常越过 `No ATAGs?`，于 2.078 秒运行 `/init` 并进入 BusyBox shell。用户随后确认 uptime
+超过 30 秒。保存的首 shell 日志只包含 `8.99 15.92`，因为 `/bin/sh` 找不到 `sleep` 链接；
+因此日志直接验证双核 shell 与 8.99 秒，>30 秒作为用户实机确认单独记录。后续保存长期日志
+应使用 `/bin/busybox sleep 5`，而不是未安装链接的 `sleep`。

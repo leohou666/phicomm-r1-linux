@@ -1,0 +1,29 @@
+diff --git a/kernel/cpu.c b/kernel/cpu.c
+--- a/kernel/cpu.c
++++ b/kernel/cpu.c
+@@ -517,7 +517,12 @@
+ 	wake_up_process(st->thread);
+ 	r1_cpuhp_trace('6');
+ 	r1_cpuhp_trace('7');
++#ifdef CONFIG_PHICOMM_R1_SECONDARY_UART_TRACE
++	while (!try_wait_for_completion(st->bringup ? &st->done_up : &st->done_down))
++		cpu_relax();
++#else
+ 	wait_for_ap_thread(st, st->bringup);
++#endif
+ 	r1_cpuhp_trace('8');
+ }
+ 
+@@ -761,8 +766,11 @@
+ 	cpuhp_lock_release(bringup);
+ 	lockdep_release_cpus_lock();
+ 
+-	if (!st->should_run)
++	if (!st->should_run) {
++		r1_cpuhp_trace('Y');
+ 		complete_ap_thread(st, bringup);
++		r1_cpuhp_trace('Z');
++	}
+ }
+ 
+ /* Invoke a single callback on a remote cpu */

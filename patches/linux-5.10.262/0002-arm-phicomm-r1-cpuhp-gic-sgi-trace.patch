@@ -1,0 +1,95 @@
+diff --git a/arch/arm/kernel/smp.c b/arch/arm/kernel/smp.c
+--- a/arch/arm/kernel/smp.c
++++ b/arch/arm/kernel/smp.c
+@@ -679,6 +679,8 @@
+ 
+ 	if ((unsigned)ipinr < NR_IPI)
+ 		trace_ipi_entry_rcuidle(ipi_types[ipinr]);
++	if (cpu == 1)
++		r1_secondary_trace('h');
+ 
+ 	switch (ipinr) {
+ 	case IPI_WAKEUP:
+@@ -730,6 +732,8 @@
+ 
+ 	if ((unsigned)ipinr < NR_IPI)
+ 		trace_ipi_exit_rcuidle(ipi_types[ipinr]);
++	if (cpu == 1)
++		r1_secondary_trace('l');
+ }
+ 
+ /* Legacy version, should go away once all irqchips have been converted */
+diff --git a/drivers/irqchip/irq-gic.c b/drivers/irqchip/irq-gic.c
+--- a/drivers/irqchip/irq-gic.c
++++ b/drivers/irqchip/irq-gic.c
+@@ -60,6 +60,17 @@
+ #define gic_check_cpu_features()	do { } while(0)
+ #endif
+ 
++#ifdef CONFIG_PHICOMM_R1_SECONDARY_UART_TRACE
++static __always_inline void r1_gic_trace(char marker)
++{
++	*(volatile u32 *)CONFIG_DEBUG_UART_VIRT = marker;
++}
++#else
++static __always_inline void r1_gic_trace(char marker)
++{
++}
++#endif
++
+ union gic_base {
+ 	void __iomem *common_base;
+ 	void __iomem * __percpu *percpu_base;
+@@ -825,6 +836,7 @@
+ {
+ 	int cpu;
+ 	unsigned long flags, map = 0;
++	bool trace_cpu1 = cpumask_test_cpu(1, mask);
+ 
+ 	if (unlikely(nr_cpu_ids == 1)) {
+ 		/* Only one CPU? let's do a self-IPI... */
+@@ -846,7 +858,11 @@
+ 	dmb(ishst);
+ 
+ 	/* this always happens on GIC0 */
++	if (trace_cpu1)
++		r1_gic_trace('d');
+ 	writel_relaxed(map << 16 | d->hwirq, gic_data_dist_base(&gic_data[0]) + GIC_DIST_SOFTINT);
++	if (trace_cpu1)
++		r1_gic_trace('e');
+ 
+ 	gic_unlock_irqrestore(flags);
+ }
+diff --git a/kernel/cpu.c b/kernel/cpu.c
+--- a/kernel/cpu.c
++++ b/kernel/cpu.c
+@@ -512,8 +512,13 @@
+ 	 */
+ 	smp_mb();
+ 	st->should_run = true;
++	r1_cpuhp_trace('4');
++	r1_cpuhp_trace('5');
+ 	wake_up_process(st->thread);
++	r1_cpuhp_trace('6');
++	r1_cpuhp_trace('7');
+ 	wait_for_ap_thread(st, st->bringup);
++	r1_cpuhp_trace('8');
+ }
+ 
+ static int cpuhp_kick_ap(struct cpuhp_cpu_state *st, enum cpuhp_state target)
+@@ -695,6 +700,7 @@
+ 
+ 	if (WARN_ON_ONCE(!st->should_run))
+ 		return;
++	r1_cpuhp_trace('W');
+ 
+ 	/*
+ 	 * ACQUIRE for the cpuhp_should_run() load of ->should_run. Ensures
+@@ -757,6 +763,7 @@
+ 
+ 	if (!st->should_run)
+ 		complete_ap_thread(st, bringup);
++	r1_cpuhp_trace('X');
+ }
+ 
+ /* Invoke a single callback on a remote cpu */

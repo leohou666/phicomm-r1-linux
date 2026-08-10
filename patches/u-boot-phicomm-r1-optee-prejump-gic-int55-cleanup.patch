@@ -1,0 +1,68 @@
+diff --git a/arch/arm/lib/spl.c b/arch/arm/lib/spl.c
+--- a/arch/arm/lib/spl.c
++++ b/arch/arm/lib/spl.c
+@@ -82,6 +82,47 @@ static void r1_spl_gic_snapshot(char phase)
+ 	r1_spl_uart_putc('\n');
+ }
+ 
++/*
++ * The stale state observed after the MaskROM/RockUSB handoff maps to the
++ * RK322x USB OTG interrupt. Only clean it up when the full signature matches:
++ * INTID 55 is the sole active interrupt and APR0 still records priority 0.
++ */
++static void r1_spl_gic_cleanup_stale_usb_otg(void)
++{
++	volatile u32 *gicd = (volatile u32 *)0x32011000;
++	volatile u32 *gicc = (volatile u32 *)0x32012000;
++	u32 groups = (gicd[0x004 / 4] & 0x1f) + 1;
++	const u32 intid55 = 1U << 23;
++	u32 old_ctlr;
++	u32 i;
++
++	if (gicc[0x014 / 4] != 0 || gicc[0x0d0 / 4] != 1 ||
++	    gicc[0x0d4 / 4] || gicc[0x0d8 / 4] || gicc[0x0dc / 4])
++		return;
++
++	for (i = 0; i < groups; i++) {
++		u32 expected = i == 1 ? intid55 : 0;
++
++		if (gicd[(0x300 / 4) + i] != expected)
++			return;
++	}
++
++	old_ctlr = gicc[0x000 / 4];
++	gicc[0x000 / 4] = 0;
++	dsb();
++
++	/* GICD_ICENABLER1, ICPENDR1 and ICACTIVER1 for INTID 55. */
++	gicd[(0x180 / 4) + 1] = intid55;
++	gicd[(0x280 / 4) + 1] = intid55;
++	gicd[(0x380 / 4) + 1] = intid55;
++	gicc[0x0d0 / 4] = 0;
++	dsb();
++
++	gicc[0x000 / 4] = old_ctlr;
++	dsb();
++	isb();
++}
++
+ #define R1_SPL_JUMP_MARK(ch) do { \
+ 	r1_spl_uart_putc(ch); \
+ } while (0)
+@@ -89,6 +134,7 @@ static void r1_spl_gic_snapshot(char phase)
+ #else
+ #define R1_SPL_JUMP_MARK(ch) do { } while (0)
+ #define r1_spl_gic_snapshot(phase) do { } while (0)
++#define r1_spl_gic_cleanup_stale_usb_otg() do { } while (0)
+ #endif
+ 
+ #ifndef CONFIG_SPL_DM
+@@ -172,6 +218,8 @@ void __noreturn jump_to_image_optee(struct spl_image_info *spl_image)
+ 	r1_spl_gic_snapshot('B');
+ 	cleanup_before_linux();
+ 	r1_spl_gic_snapshot('A');
++	r1_spl_gic_cleanup_stale_usb_otg();
++	r1_spl_gic_snapshot('C');
+ 	R1_SPL_JUMP_MARK('R');
+ 
+ 	spl_optee_entry(NULL, NULL, spl_image->fdt_addr,

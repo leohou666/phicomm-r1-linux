@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+
+/*
+ * GIC-only A/B companion to the PSCI v1 minimal diagnostic DT.
+ *
+ * All CPU, PSCI, timer, UART and memory properties come from the base file.
+ * Only use the upstream RK322x GIC-400 compatible string and full four-window
+ * register description, including the virtualisation interfaces.
+ */
+
+#include "rk3229-phicomm-r1-minimal-psci-v1.dts"
+
+&gic {
+	compatible = "arm,gic-400";
+	reg = <0x32011000 0x1000>,
+	      <0x32012000 0x2000>,
+	      <0x32014000 0x2000>,
+	      <0x32016000 0x2000>;
+};

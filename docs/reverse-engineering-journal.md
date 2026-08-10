@@ -2379,3 +2379,1145 @@ SHA-256 `5e4eb78fb9e101552971a6b3ef9afa6a2852e22fe97e574267b19d6fa4167075`
 判读预期：若 0x60008a90 处为 `d00dfeed`（历史 DTB 位置）而 0x6000e000 起为垃圾，
 则边界在两者之间；若 0x60008a90 也是垃圾，则整个高地址区在运行时都不可用，
 需要重新审视 472 装载流程（例如 BootROM 仅装载前 ~0x9000 字节）。
+
+## eMMC hardware boot0/boot1 备份完成（2026-08-08）
+
+补齐交接记录中的安全缺口：eMMC hardware boot0/boot1 已确认并完整备份。
+
+### 方法（纯只读）
+
+设备在 RAM-only U-Boot 提示符下（`r1-phicomm-r1-uboot-spl-dtb-generic-loader.bin`
+`db` 进入，不写盘），用 `mmc dev` 切硬件分区、`mmc read` 读到 RAM、`md.b` 经串口
+dump（该 U-Boot 构建没有 `mmc partconf`/`extcsd` 子命令，直接读内容判断）：
+
+```text
+mmc dev 0 1                          # boot0
+mmc read 0x61000000 0 0x2000         # 4 MiB 到 RAM
+md.b 0x61000000 0x40000              # 256 KiB/块 × 16 块，串口日志落盘
+mmc dev 0 2                          # boot1（新日志文件，地址范围相同避免混淆）
+```
+
+主机端重建（串口日志 `build/artifacts/r1-boot-backup.log` /
+`r1-boot-backup-b.log`）：
+
+```python
+# 提取所有 "61000000: aa bb ..." 行 → 按地址连续拼接 → 无缺口即成功
+# 16,384 行/块 × 16 块 = 4 MiB，缺口 0
+```
+
+### 结果
+
+```text
+backup/boot/r1-emmc-boot0.img   4 MiB
+backup/boot/r1-emmc-boot1.img   4 MiB
+两者 sha256 相同：70b4abfd87fa2e201ce17ddbf6886009ac9e70c64d2cc09880f61bef5604fdb9
+（SHA256SUMS 见 backup/boot/*.sha256）
+```
+
+### 内容观察
+
+- boot0/boot1 **逐字节相同**：同一个 Rockchip loader 写了两份（冗余）；
+- 结构：0x000-0x2173 加密/签名数据块（0x020A 处 ASCII "RK28"），0x0800 起
+  "RK32" 标记 + ARM 启动代码（主代码段 0x2A08-0x11510 ≈ 59 KB），非零内容共
+  66,411 B，其余全零；
+- 该内容与本地 rkbin 的 `rk322x_miniloader_v2.37.bin`（69,876 B，头为
+  "RSAK"）**不是同一格式**，未做进一步归属鉴定（备份目的已达成）；
+- 注意：boot 分区**有内容**，但 BootROM 是否实际从 boot0/boot1 启动仍未直接
+  验证——R1 正常启动路径走 user area IDB（sector 0x40 一带）；该 loader 的存在
+  可能是出厂编程的冗余/回退路径。
+
+### SPL 瘦身 + UART YMODEM 交付链（2026-08-08）
+
+按既定路线（A 线 FIT 交付）落地：SPL 瘦身到 db 窗口附近 + YMODEM 从串口收 FIT。
+commit `3ceba8432be`。
+
+#### 瘦身结果（36 KB 窗口约束）
+
+| 措施 | 收益 |
+|---|---|
+| 关 `SPL_SHA1`/`SPL_SHA256`（FIT 只用 crc32） | **13.6 KB**（sha1_process 4.2K + sha256_process 8.2K，经 common/hash.c 的 algo 表引用） |
+| 关 `SPL_PARTITIONS`/`SPL_EFI_PARTITION`/`SPL_MMC` | ~6.9 KB |
+| 移除 0x20000 暂存区填充 + 15 地址地图探针 | ~1.5 KB |
+| 关 `ANDROID_BOOT_IMAGE`（影响 proper，记录在案） | ~0.7 KB（其余早被 gc-sections 剔除） |
+
+`__bss_end`: 0x2E7B0 → **0x9200**（SPL+DTB 结束 0x96FE）。教训：**用 map 统计对象大小
+不可靠**（包含已丢弃段），`nm --size-sort -S` 的最终符号尺寸才是真实贡献；
+`command.o`/`dump.o` 等看似可砍的 obj-y 实际已被 --gc-sections 剔除，改 Makefile
+门槛无收益（已保留改动，属无害清理）。
+
+坑：`SPL_SHA1/SHA256` 有 `default y if SHA1/SHA256`，`scripts/config --disable` 后
+`olddefconfig` 会因 mbedtls Kconfig 的 `select SPL_SHA1_LEGACY if SPL_SHA1` 链被
+拉回——直接对 `SPL_SHA1/SPL_SHA256` 本体 disable 即可（LEGACY 的 select 带
+`if SPL_SHA1` 条件，本体关掉后不再触发）。
+
+#### YMODEM 链路
+
+- `CONFIG_SPL_YMODEM_SUPPORT=y`；`spl_ymodem.c:188` 的
+  `SPL_LOAD_IMAGE_METHOD("UART", ...)` 自动注册 BOOT_DEVICE_UART；
+- 当前工作树随后将 `board_boot_order()` 调整为首先尝试 BOOT_DEVICE_UART；
+  这是为了避免 MaskROM RAM payload 的越窗垃圾路径阻塞在串口交付之前；
+- `spl_ymodem.c` 的 `CONFIG_SPL_LOAD_FIT_FULL` 分支：YMODEM 整包收进
+  `CONFIG_SYS_LOAD_ADDR`(0x61800800)，FIT 就地解析（op-tee 数据已离线验证完整）；
+- 收完跳转沿用既有 `L/M/N/O/P/Q/R/T` 路标。
+
+#### 产物
+
+```text
+初版产物曾使用上述路径和 SHA-256 `ca01385e...` / `4f2dec72...` 记录；其后为
+首传诊断重建并覆盖同名文件，不能再把初版身份当作当前文件校验值。当前身份、FIT
+组件及首传结论见下节“YMODEM 首传失败的主机侧复核”。
+```
+
+#### 上板流程（下一步）
+
+1. 真 MaskROM + 串口（1500000 8N1）就绪后：
+   `sudo ./rkdeveloptool/rkdeveloptool db build/artifacts/r1-phicomm-r1-uboot-spl-ymodem-loader.bin`
+2. 串口预期：`SRM012345ABabsm...` → `Trying to boot from UART` → 输出单个 `C`，
+   后者是接收端请求 CRC16 的 YMODEM 握手；
+3. 主机端必须从**拥有同一串口文件描述符的终端程序本地命令功能**启动真正的
+   YMODEM sender：`sb -k -vv build/artifacts/r1-ymodem-fit.itb`。不要用
+   `sz -Y`：`-Y` 是 ZMODEM 的“overwrite-or-skip”，不选择 YMODEM。实机失败的
+   `sz -Y -vv` 已在主机伪串口复现：收到 `C` 后发出 ZMODEM 起始串
+   `72 7a 0d 2a 2a 18 42 30 ...`（ZMODEM `rz` 前导），所以 SPL 发送 NAK；相同
+   `C` 输入下，`sb -k` 正确发出 YMODEM block 0
+   `01 00 ff r1-ymodem-fit.itb 00 796672 ...`。终端必须保持 1500000 8N1、无流控、
+   原始二进制模式且没有第二个进程读取该串口；
+4. 判读：若 DTB 落在 0x9200 不可用（`sn<hex>`）→ 需再砍 ~1.9 KB 把 DTB 压回
+   0x8aa0 已验证区；若 `sm` 且出现 `LMNOPQRT` 则进入 OP-TEE 交接验证。
+
+### YMODEM 首传失败的主机侧复核（2026-08-08）
+
+实机日志已确认当前 loader (`U-Boot SPL 2026.10-rc1-00121-g3ceba8432bef-dirty`)
+到达 `Trying to boot from UART` 并发出 `C`；因此 RAM `db`、UART2 RX/TX、SPL 启动顺序
+和 `CONFIG_SPL_YMODEM_SUPPORT` 均已通过此次最小验证。发送端使用的是：
+
+```text
+sz -Y -vv build/artifacts/r1-ymodem-fit.itb
+```
+
+其输出为多次 `Retry 0: NAK on sector`，没有传出任何 FIT 数据。这个结果不能用于判断
+OP-TEE 或 FIT，因为协议在文件块 0 之前已经不匹配。
+
+本机以一对 raw pseudo-TTY 向 sender 注入单个 `C`，并抓取首个输出帧。`sz -Y` 发出
+ZMODEM `rz` 前导握手；`sb -k` 则发出 CRC 正确的 YMODEM 文件头。结论是 `sz -Y`
+的选项含义被误解：它不是 YMODEM 模式。下次只按上述 `sb -k -vv` 操作；首个成功标志
+应为 SPL 输出 `Loaded 796672 bytes`。当前 FIT 经 `dumpimage -l` 离线核对，确含
+345,128-byte U-Boot、423,248-byte 开源 OP-TEE（load/entry `0x68400000`）和
+25,752-byte R1 FDT；接收缓冲区 `0x61800800-0x618c3000` 不与 OP-TEE 保留区重叠。
+
+当前文件身份：
+
+```text
+build/artifacts/r1-phicomm-r1-uboot-spl-ymodem-loader.bin
+  852245 B  SHA-256 8031e57044ae0f2506bb77d5c022534adf989d23e85da373918a4469cfc08434
+build/artifacts/r1-ymodem-fit.itb
+  796672 B  SHA-256 eb848a90f15d7fa29854d635916478801193b1b5827f293f8157d831bc368493
+```
+
+### 直接串口桥接发送器（主机侧，待实机验证）
+
+picocom 的外置文件传输会把串口交给子进程；在 `sb` 首包仍超时的情况下，下一步
+不再让终端模拟器参与二进制路径。新增
+`scripts/ymodem-serial-bridge.py`：它独占 USB-TTL、以 raw 1500000 8N1 打开物理
+串口，用 pseudo-TTY 连接 `sb -k -vv`，把所有板端字节保存到 raw log；`sb` 结束后
+继续在同一终端显示板端输出 45 秒。这样既不需要两个进程竞争串口，也能保留 OP-TEE
+与 Linux 的启动日志。命令只向 RAM-only SPL 发送 FIT，不写 eMMC：
+
+```sh
+sudo python3 scripts/ymodem-serial-bridge.py \
+  /dev/ttyUSB0 build/artifacts/r1-ymodem-fit.itb
+```
+
+开始前以 picocom 的 `Ctrl-A`、`Ctrl-Q` 退出，避免它仍占用 `/dev/ttyUSB0`；板端可
+继续停在 YMODEM 等待状态，bridge 会等下一个 `C`。成功的第一个设备标志仍是
+`Loaded 796672 bytes`。脚本已通过 Python 编译和 `--help` 参数检查，尚未连接 R1
+实机执行。随后用一对 raw pseudo-TTY 模拟板端：bridge 收到单个 `C` 后，捕获到
+`sb` 发出的完整 133-byte YMODEM block 0，首字节为
+`01 00 ff 72 31 2d 79 6d 6f 64 65 6d ...`，文件名和 `796672` 长度字段均正确；
+这验证了 bridge 的 PTY 转发不会重现 picocom 路径中的“无完整首包”现象。
+
+### YMODEM 双向日志与 SPL RX 阶段诊断（2026-08-08）
+
+第一次实机运行 bridge 后保留的 `build/artifacts/r1-ymodem-serial.log` 由连续 9 个 `C`（`0x43`）开始，随后为 9 个 NAK（`0x15`）以及：
+
+```text
+spl: ymodem err - Timed out
+Error: -1
+SPL: Unsupported Boot Device!
+```
+
+日志内没有 SOH/STX、YMODEM 文件名或任何来自主机的文件头字节。因此这次失败发生在接收 FIT 之前，不能归因于 FIT、开源 OP-TEE 或 Linux。旧 bridge 仅记录 board→host，不能区分“`sb` 没输出”和“bridge 没写入 USB-TTL”；脚本现增加 `--tx-log`（默认 `build/artifacts/r1-ymodem-serial-tx.log`），写入物理串口成功后同步保存 host→board 原始字节。`python3 -m py_compile scripts/ymodem-serial-bridge.py` 已通过。
+
+为让设备端独立说明超时位置，`common/xyzModem.c` 增加诊断输出：`R1XM timeout stage=0 count=<n>` 表示等待 SOH/STX 时收到的非帧首字节数；stage 1–5 依次表示已收到帧首字节后等待 block、反码、payload、CRC；完整帧还会报告 frame/CRC 错误。
+
+```sh
+make -C build/u-boot CROSS_COMPILE=arm-none-eabi- DTC=/usr/bin/dtc TEE=tee.bin -j8
+./rkdeveloptool/rkdeveloptool pack
+sha256sum build/artifacts/r1-phicomm-r1-uboot-spl-ymodem-rxtrace-loader.bin
+```
+
+生成 RAM-only 诊断 loader：
+
+```text
+build/artifacts/r1-phicomm-r1-uboot-spl-ymodem-rxtrace-loader.bin
+  size:    854289 bytes
+  sha256:  c78ed30e668d3085c415f04d66373929f7f938934fcaa698b9cb60878df3c3e6
+  472:     u-boot-rockchip-usb472.bin, 835712 bytes,
+           sha256 9601ef156d613a20b9189c83e929d271405f7770f67ace4b81f05909620b5aa6
+```
+
+打包输出确认 471 为 `rk322x_ddr_300MHz_v1.06.bin`、472 为刚构建的文件；对 loader 运行 `strings` 也确认所有 `R1XM timeout stage=0..5` 字符串在包内。下一次仅用 `db` 加载这个诊断镜像，不写 eMMC，再执行一次修正后的 bridge。若得到 `stage=0 count=0`，优先检查 SPL/UART RX 初始化或物理主机→R1 路径；stage 1–5 或 CRC/frame 错误则说明字节已到达设备，可以定位帧级问题。
+
+### 双向日志定位 UART RX 初始化并生成修正版（2026-08-08）
+
+实机 bridge 的双向日志完成闭环。host→board 日志每次都是完整、正确的 133-byte YMODEM block 0，开头为：
+
+```text
+01 00 ff 72 31 2d 79 6d 6f 64 65 6d 2d 66 69 74
+         r  1  -  y  m  o  d  e  m  -  f  i  t
+```
+
+但 board→host 每轮均为 `C R1XM timeout stage=0 count=0`。因此 USB-TTL 与 bridge 已成功把文件头写出；SPL UART RX 在等待 SOH/STX 时没有收到一个字节。这排除 FIT、OP-TEE、YMODEM sender 参数和桥接转发。
+
+检查 SPL 生成 DTB 发现 `CONFIG_OF_SPL_REMOVE_PROPS` 已移除 UART 的 `pinctrl-0`/`pinctrl-names`。同时 R1 的 `CONFIG_DEBUG_UART_SKIP_INIT=y` 使 `board_debug_uart_init()` 与 `debug_uart_init()` 都跳过，完全继承 471 留下的 UART 状态。该状态的 TX 可用（所有路标和 `C` 正常），但 UART2-1 RX 不可用。这是本次故障的固件侧根因。
+
+修正为删除 `CONFIG_DEBUG_UART_SKIP_INIT`，保留 R1 路标并使 SPL 早期显式执行 RK322x UART2-1 mux（GPIO1B2 RX/GPIO1B1 TX）、NS16550 FIFO 与 1,500,000 baud 8N1 初始化。重建命令：
+
+```sh
+cd build/u-boot
+./scripts/config --disable DEBUG_UART_SKIP_INIT
+make olddefconfig
+make CROSS_COMPILE=arm-none-eabi- DTC=/usr/bin/dtc TEE=tee.bin -j8
+```
+
+新的 RAM-only 候选：
+
+```text
+build/artifacts/r1-phicomm-r1-uboot-spl-ymodem-rxfix-loader.bin
+  size:    854289 bytes
+  sha256:  d23b86fd5e2d54e808b99880b1ede71917e6f9237e1270903bd9d93262fcab98
+  472:     836288 bytes
+           sha256 c91ad0897f0a8d8f01d35f988d354834d26245cf89c9cac970035fdbf9e4e954
+```
+
+离线检查确认 `.config` 中 `CONFIG_DEBUG_UART_SKIP_INIT` 已关闭、`CONFIG_DEBUG_UART_BOARD_INIT=y` 与 `CONFIG_SPL_YMODEM_SUPPORT=y` 仍在，且镜像保留 stage 0–5 诊断字符串。下一步仅执行 `rkdeveloptool db` 加载此文件，再运行 bridge；不执行任何 eMMC 写命令。
+
+### RX-fix 实机结果与 1.5M 轮询优化（2026-08-08）
+
+RX-fix 不是原问题的重复：这次 board→host 日志每轮均为 `R1XM timeout stage=3 count=53`（少数为 `52`）。stage 3 表示 SPL 已收到 SOH、block number、block complement 和 payload 的 `0x53`（83）或 `0x52`（82）字节，随后才发生字符超时。相比上一版的 `stage=0 count=0`，UART2-1 RX mux/初始化修正已经被实机验证。
+
+`xyzModem.c` 的 `CYGACC_COMM_IF_GETC_TIMEOUT()` 原先在每一次获取字符前无条件调用 `schedule()`；1,500,000 baud 下每字节仅约 6.7 µs，连续 133-byte 文件头期间该额外调度足以让轮询接收落后并造成 UART FIFO 丢失。修正为仅在 `while (!tstc())` 的空闲等待路径调用 `schedule()`：连续可读数据不调度，包间和超时等待仍可调度。
+
+```diff
+-  schedule();
+  while (!tstc ()) {
+ +  schedule();
+     ...
+  }
+```
+
+重建、打包及 SHA-256：
+
+```text
+build/artifacts/r1-phicomm-r1-uboot-spl-ymodem-rxfast-loader.bin
+  size:    854289 bytes
+  sha256:  7220f8b7508cca136d87ba33098b8bf2851d9a1343a5442568ce2a8414aeda3f
+  472:     836288 bytes
+           sha256 7321bea3c4e705422e81dd30537c47ff07ce3b744885f8e5098b02a862172da1
+```
+
+该产物同时含 UART2-1 显式初始化和 stage 0–5 诊断。下一次仍只用 `db` 下载它到 RAM 后运行 bridge；成功门槛为完整 block 0 的 ACK 和 `Loaded 796672 bytes`，不执行 eMMC 写入。
+
+### 主机端 YMODEM 逐字节节流（2026-08-08）
+
+RX-fast 实机仍稳定报告 `R1XM timeout stage=3 count=52`，而其 host→board raw log 仍是完整的 133-byte block 0。移动 `schedule()` 没有改变该上限，故不能再把故障归为该调度调用；已验证事实是 1,500,000 baud 的连续 USB-TTL burst 超过当前 SPL 轮询接收链的可靠吞吐。
+
+`scripts/ymodem-serial-bridge.py` 新增 `--tx-gap-us`。值非零时，bridge 对 `sb` 输出的每一个字节执行物理串口写入、`flush()` 和指定微秒间隔，同时完整保存未修改的 tx raw log；这不改变 YMODEM 帧、FIT 或板端配置。Python 编译与 `--help` 参数检查通过。下一次采用：
+
+```sh
+sudo python3 scripts/ymodem-serial-bridge.py \
+  --tx-gap-us 50 \
+  /dev/ttyUSB0 build/artifacts/r1-ymodem-fit.itb
+```
+
+50 µs 是可靠起始值，总代价约为 1–2 分钟传输时间；全程只向 RAM 中的 SPL 发送 FIT，不写 eMMC。若 block 0 成功但 1 KiB data packet 仍丢失，保持该模式即可继续节流发送，而不改变 OP-TEE/FIT 内容。
+
+### 首次实机进入开源 OP-TEE 与 U-Boot proper DTB 缺失（2026-08-08）
+
+以 RX-fast loader 和 `--tx-gap-us 50` 发送后，`sb` 报告 `Transfer complete`，SPL 报 `Loaded 796672 bytes`，随后依次加载 OP-TEE、FIT FDT 与 U-Boot loadable，并输出 `LMNOPQRT`。开源 OP-TEE 实机日志确认：
+
+```text
+I/TC: OP-TEE version: 3.7.0-1-ga34a269b7-dev ... #2 Thu Apr  4 16:39:43 UTC 2024 arm
+I/TC: Initialized
+D/TC:0 0 init_primary_helper:1109 Primary CPU switching to normal world boot
+```
+
+这首次在 R1 上验证了开源 OP-TEE 的真实执行，而不只是 FIT 离线检查。`spl_perform_arch_fixups` 关于 MaskROM boot device 无 ofpath 的警告不阻止 OP-TEE 初始化，属于 RAM `db` 路径没有 DT ofpath 映射。
+
+切回 normal world 后 U-Boot proper 立即报：
+
+```text
+No valid device tree binary found at 61054428
+initcall_run_f(): initcall fdtdec_setup() failed
+### ERROR ### Please RESET the board ###
+```
+
+地址 `0x61054428` 恰为旧 FIT `u-boot` 子镜像的终点：其 345,128-byte payload 被离线确认是 `u-boot-nodtb.bin`。U-Boot proper 采用 separate DTB 配置，启动时要求 DTB 紧接自身 binary；FIT 的独立 `fdt-1` 供 SPL/OP-TEE 使用，并不会自动拼接到 loadable 尾部。因此此错误是 FIT 组成错误，不是 OP-TEE、PSCI 或 Linux 失败。
+
+新增 `scripts/r1-ymodem-fit-dtb.its`，其 `u-boot` 使用 `u-boot-dtb.bin`，同时保留独立 `fdt-1`：
+
+```sh
+mkimage -f scripts/r1-ymodem-fit-dtb.its build/artifacts/r1-ymodem-fit-dtb.itb
+```
+
+通过 `dumpimage -p 0/1/2` 解出三项并逐字节 `cmp`，结果分别等于 `u-boot-dtb.bin`、`rk322x_tee_os.bin`、`u-boot.dtb`。U-Boot 子镜像 371,360 B，末尾偏移 `0x54608` 出现 `d00dfeed` DTB magic；新 FIT 身份为：
+
+```text
+build/artifacts/r1-ymodem-fit-dtb.itb
+  size:    822318 bytes
+  sha256:  5687f549a82d3f2e0b51fe064df05a4b623ba180872c581132e6ecbe6a49cd84
+  u-boot:  371360 bytes (u-boot-dtb.bin)
+  op-tee:  423248 bytes (matches rk322x_tee_os.bin)
+  fdt-1:   25752 bytes (matches u-boot.dtb)
+```
+
+下一次在真 MaskROM 下仅 `db` RX-fast loader 后，以 `--tx-gap-us 50` 发送这个新 FIT；全程不执行 eMMC 写命令。
+
+## 开源 OP-TEE 后进入 U-Boot proper 提示符（2026-08-08）
+
+按上述流程发送 `r1-ymodem-fit-dtb.itb` 后，YMODEM 完成，SPL 装入 OP-TEE、其后
+返回 normal world 的 U-Boot proper。关键实机输出为：
+
+```text
+I/TC: OP-TEE version: 3.7.0-1-ga34a269b7-dev ... arm
+I/TC: Initialized
+D/TC:0 0 init_primary_helper:1109 Primary CPU switching to normal world boot
+
+U-Boot 2026.10-rc1-00121-g3ceba8432bef-dirty
+Model: Phicomm R1
+DRAM:  512 MiB (total 480 MiB)
+MMC:   mmc@30020000: 0
+=>
+```
+
+这完成了不写 eMMC 的开源 OP-TEE → 现代 U-Boot proper 实机交接。`total 480 MiB`
+与 OP-TEE 在 `0x68400000` 起保留 TEE RAM、TA RAM 和 shared memory 的布局一致；它不是
+DRAM 探测失败。下一步只从 U-Boot 对 eMMC 执行 `mmc read`，把 recovery 的 zImage、
+gzip initramfs 和 resource 内的 DTB 逐项放在 `0x68400000` 以下，再以 `bootz` 启动。
+当前 recovery 的 Linux DTB 仍故意保留先前针对原厂 Trust OS 的 PSCI 0.1 binding，先作为
+开源 OP-TEE 能否带起同一 SMP 基线的 A/B；随后再构建 PSCI 1.0/0.2 Linux DTB 对照。
+
+### 首次双核 Linux 交接观察
+
+在 U-Boot 提示符下没有写 eMMC。先从原始 LBA `0x20000` 读一 sector，Android header
+确认 kernel size `0x009b2200`、ramdisk size `0x00099018`、second size `0x00000c00`；
+随后分别读取 kernel、ramdisk 和 resource 内偏移 `0x400` 的 1,849-byte DTB，并执行：
+
+```text
+bootz 0x62000000 0x64000000:0x99018 0x65000000
+```
+
+Linux 5.10.262 在 CPU0 正常进入 SMP bring-up，明确打印 `psci: Using PSCI v0.1
+Function IDs from DT`。紧接着的 secure-world 输出是：
+
+```text
+smp: Bringing up secondary CPUs ...
+D/TC:0   psci_cpu_on:278 core_id: 1
+D/TC:1   init_secondary_helper:1133 Secondary CPU Switching to normal world boot
+```
+
+此后没有 Linux CPU1 的启动行或 panic。已验证的范围是：旧 DTB 确实使用
+`compatible = "arm,psci"` 和 `cpu_on = <0x84000003>`；OP-TEE 确实接收并处理
+CPU1 的 CPU_ON，且执行切回 normal world。PSCI 0.1 与 0.2/1.0 的 ARM32 CPU_ON
+调用号同为 `0x84000003`，因此不能把停止直接归因为“没有进入 OP-TEE”；但 Linux DT
+仍应以 mainline PSCI 1.0/0.2 binding 再做单变量 A/B，检查 PSCI_VERSION/feature
+协商及次核入口路径是否不同。
+
+已新增 `kernel/dts/rk3229-phicomm-r1-minimal-psci-v1.dts`。它 include 原最小 DT，
+仅把 `/psci/compatible` 改为 `"arm,psci-1.0", "arm,psci-0.2"`，并删除仅属于 0.1
+binding 的三个 function-ID 属性。离线编译和验证：
+
+```sh
+cpp -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
+  -I build/kernel-src-5.10/arch/arm/boot/dts/rockchip \
+  -I build/kernel-src-5.10/scripts/dtc/include-prefixes \
+  kernel/dts/rk3229-phicomm-r1-minimal-psci-v1.dts > /tmp/r1-minimal-psci-v1.dts
+build/kernel-5.10/scripts/dtc/dtc -I dts -O dtb -Wno-unit_address_vs_reg \
+  -o build/artifacts/rk3229-phicomm-r1-minimal-psci-v1.dtb \
+  /tmp/r1-minimal-psci-v1.dts
+fdtget -t s build/artifacts/rk3229-phicomm-r1-minimal-psci-v1.dtb /psci compatible
+fdtget -t x build/artifacts/rk3229-phicomm-r1-minimal-psci-v1.dtb /psci cpu_on
+```
+
+输出 compatibility 为 `arm,psci-1.0 arm,psci-0.2`，读取 `cpu_on` 正确返回
+`FDT_ERR_NOTFOUND`。产物 1,790 B，SHA-256 为
+`85605813b11b6b8744de044f3e954809c0b1baf93eb764acd016830cd4653436`。它需要通过
+U-Boot proper 的 `loady` 放入 RAM，不能混入 SPL 的 OP-TEE FIT；kernel 和 ramdisk
+仍直接从 eMMC 只读加载。
+
+首次发送该 DTB 时，板子已不在 U-Boot proper `loady` 接收状态；`sb` 虽显示
+`Transfer complete`，后续板端却打印 `Bad FIT kernel image format! (err=-42)` 和
+`SPL: Unsupported Boot Device!`。这说明 1,792-byte DTB 被错误交给 SPL 在
+`0x61800800` 按 FIT 解析，并非 U-Boot proper 成功收到 DTB；没有 eMMC 写入。为避免
+串口终端关闭/打开与发送器之间的时序竞争，`scripts/ymodem-serial-bridge.py` 新增
+`--command 'loady 0x65000000'`：bridge 独占串口，先发 U-Boot 命令，确认收到 YMODEM
+CRC 请求 `C` 后才启动 `sb`。只有看到 `## Ready for binary (ymodem)` 和该 `C`，才可
+继续发送 Linux DTB。
+
+### PSCI 1.0/0.2 单变量 A/B 结果
+
+使用 bridge 的 `--command 'loady 0x65000000'` 将 1,790-byte PSCI v1 DTB 放入 RAM；
+U-Boot `fdt print /psci` 确认节点只含：
+
+```text
+compatible = "arm,psci-1.0", "arm,psci-0.2";
+method = "smc";
+```
+
+同一份 eMMC kernel 与 ramdisk 经相同 `bootz` 命令启动。Linux 明确打印：
+
+```text
+psci: PSCIv1.0 detected in firmware.
+psci: Using standard PSCI v0.2 function IDs
+psci: SMC Calling Convention v1.0
+smp: Bringing up secondary CPUs ...
+D/TC:0   psci_cpu_on:278 core_id: 1
+D/TC:1   init_secondary_helper:1133 Secondary CPU Switching to normal world boot
+```
+
+之后依旧没有 Linux CPU1 输出，现象与 PSCI 0.1 DTB 相同。此为实机结论：OP-TEE 的
+PSCI_VERSION、标准 v0.2 CPU_ON 和 SMC convention 都已可用；Linux 的 PSCI binding/
+function-ID 选择不是 CPU1 立即停止的根因。故障范围缩窄到 OP-TEE secondary normal-world
+return 的目标入口/CPU 状态，或 Linux `secondary_startup` 的首段（SVC mode、processor
+lookup、`secondary_data`/MMU 切换）。下一项最小诊断是在该汇编路径分段写 UART 路标，
+不改变 PSCI、DT、kernel command line 或 eMMC 内容。
+
+### Linux `secondary_startup` UART 路标候选
+
+用户授权后，新增 `patches/linux-5.10.262/0001-arm-phicomm-r1-secondary-uart-trace.patch`，
+并在 `kernel/config/r1-5.10.fragment` 启用
+`CONFIG_PHICOMM_R1_SECONDARY_UART_TRACE=y`。路标语义为：
+
+```text
+A  OP-TEE 已跳入 Linux secondary_startup（MMU 关闭，物理 UART）
+B  safe_svcmode_maskall 完成
+C  Cortex-A7 processor type lookup 成功
+D  secondary_data 已读出，准备执行 processor init / MMU enable
+E  MMU 已切换，进入 __secondary_switched、即将跳 secondary_start_kernel
+```
+
+`A`–`D` 直接写 `DEBUG_UART_PHYS=0x11030000`，`E` 改写
+`DEBUG_UART_VIRT=0xfed30000`，避免在 MMU 后访问未映射的物理外设地址。构建命令：
+
+```sh
+KERNEL_SRC=build/kernel-src-5.10 KERNEL_BUILD=build/kernel-5.10 \
+KERNEL_EXTRA_FRAGMENT=kernel/config/r1-5.10.fragment \
+BOARD_DTS=kernel/dts/rk3229-phicomm-r1-minimal-psci-v1.dts \
+rtk scripts/build-kernel.sh
+cp build/artifacts/zImage build/artifacts/zImage-5.10-psci-v1-secondary-trace
+```
+
+首次候选的最终配置确认该 symbol 为 `y`；`head.o` 反汇编确认 `secondary_startup` 首条实际
+路标写出 ASCII `0x41`，其余为 `0x42`、`0x43`、`0x44`，而
+`__secondary_switched` 写 `0x45`。该候选随后被 C 路径扩展版取代；两者都不会写入
+recovery：现代 U-Boot proper 的 `loady 0x62000000` 将它传入 RAM，ramdisk 仍从
+eMMC 只读加载，随后使用既验证的 PSCI v1 DTB `bootz`。
+
+### 对 OP-TEE 次核诊断假设的二进制复核
+
+外部诊断提出了三项可检验假设：传给 PSCI 的次核 entry、ACTLR.SMP 和 DDR/SGRF 的
+normal-world 属性。对当前实际执行的 `build/tee/rk322x_tee_os.bin` 的本地复核结果：
+
+- Linux 5.10 的 `arch/arm/kernel/psci_smp.c` 明确调用
+  `psci_ops.cpu_on(cpu_logical_map(cpu), virt_to_idmap(&secondary_startup))`；实机
+  `Setting up static identity map for 0x60300000 - 0x603000ac` 因而直接证明本轮
+  CPU1 的预期入口为 `0x60300000`，而不是仅凭地址形态推测。
+- 虽然 blob 没有 ELF 符号表，`arm-none-eabi-objdump -D -b binary -m arm
+  --adjust-vma=0x68400000` 在 `0x6840016c` 给出：
+
+  ```text
+  mrc p15, 0, r0, c1, c0, 1
+  orr r0, r0, #64
+  mcr p15, 0, r0, c1, c0, 1
+  isb
+  ```
+
+  这正是把 Cortex-A7 ACTLR bit 6（SMP）置位的序列，故“当前 blob 缺少
+  ACTLR.SMP 代码”被排除。单靠反汇编尚不能证明该小函数在 CPU1 每次启动时均被调用，
+  但它不再是首要的“未编入”嫌疑。
+- DDR/SGRF 的 region 属性为全局属性；CPU0 已在 normal world 从同一 DDR 执行 U-Boot
+  和 Linux，不能彻底否定次核 transition 状态问题，但它不符合“仅 CPU1 首次取
+  `0x60300000` 指令就失败”的首要解释。
+
+当前二进制还保留 `core/arch/arm/plat-rockchip/psci_rk322x.c` 和
+`psci_cpu_on` 字符串，可确认 blob 包含 RK322x PSCI 后端；但它不是 `tee.elf`，没有可
+直接插入 DMSG 的源码/符号。检索 upstream 仓库也未能以 blob version 字符串中的短 SHA
+`a34a269b7` 定位可复现源提交，因此禁止把当前 upstream `master` 的具体实现细节当作
+本 blob 的已验证事实。相比先改一个未复现的 TEE 源树，Linux 路标能以最小变量直接回答
+OP-TEE 是否已跳入 `0x60300000`。
+
+### CPU1 已到达 Linux C 路径；扩展 `F`–`N` 路标（2026-08-08）
+
+实机回传连续 `ABCDE`。按上述汇编路标的已验证语义，这不是“PSCI 起不了第二核”：CPU1 已
+从开源 OP-TEE 返回到 Linux `secondary_startup`，完成 SVC mode、Cortex-A7 processor lookup、
+读取 `secondary_data`、启用 Linux 页表，穿过 `__secondary_switched` 并 branch 到
+`secondary_start_kernel()`。因此以下假设均不再是当前首要嫌疑：OP-TEE 把 CPU1 返回到错误
+的 Linux entry、blob 完全缺少 ACTLR.SMP 设置、以及 Linux 次核汇编的早期 MMU 切换失败。
+
+为将停点继续缩小到 C 函数，补丁在 `arch/arm/kernel/smp.c` 加入虚拟 DEBUG_LL UART
+(`0xfed30000`) 写入，重新构建同一 PSCI v1 DTB 组合。新标记语义为：
+
+```text
+F  已进入 secondary_start_kernel()
+G  secondary_biglittle_init() 返回（本配置未启用 CONFIG_BIG_LITTLE，实际为空）
+H  cpu_switch_mm、branch predictor/TLB 初始化返回
+I  init_mm 引用、current->active_mm 与 mm_cpumask 完成
+J  cpu_init() 返回
+K  notify_cpu_starting() 返回
+L  ipi_setup() 返回
+M  set_cpu_online(cpu, true) 返回
+N  complete(&cpu_running) 返回
+```
+
+构建仍使用：
+
+```sh
+KERNEL_SRC=build/kernel-src-5.10 KERNEL_BUILD=build/kernel-5.10 \
+KERNEL_EXTRA_FRAGMENT=kernel/config/r1-5.10.fragment \
+BOARD_DTS=kernel/dts/rk3229-phicomm-r1-minimal-psci-v1.dts \
+rtk scripts/build-kernel.sh
+cp build/artifacts/zImage build/artifacts/zImage-5.10-psci-v1-secondary-trace
+```
+
+`smp.o` 反汇编验证连续写出 ASCII `0x46`–`0x4e`，且地址为虚拟 UART。当前候选为
+`build/artifacts/zImage-5.10-psci-v1-secondary-trace`，10,162,688 B，SHA-256
+`db7c8d454b3661632f4de5ac165d0778bfe2179a1e1e53fb283a120eacb06899`。下一次只需经
+U-Boot proper `loady 0x62000000` 传入该 zImage，再以 eMMC 只读 ramdisk 与既验证 DTB
+执行 `bootz`；不执行任何 eMMC 写入。观察到的最后一个字符将直接对应上表的最后完成步骤。
+
+### CPU1 完成 online/completion；进入 IRQ 与 idle 分支追踪（2026-08-08）
+
+实机使用上述 `F`–`N` 候选，串口连续输出 `ABCDEFGHIJKLMN`。其中 `M` 位于
+`set_cpu_online(cpu, true)` 之后，`N` 位于 `complete(&cpu_running)` 之后。因此本轮已经
+实证 CPU1 不仅到达 C 函数，而且完成 CPU online 位图、CPU 信息、IPI setup 和对 CPU0
+`__cpu_up()` 等待者的 completion。此前关于 OP-TEE PSCI CPU_ON return、Linux entry、
+次核页表与 C 初始化早段的假设不再是当前首要问题。
+
+新的最小扩展不改变 PSCI、DT、rootfs 或 eMMC 内容：CPU1 在 `N` 后、`local_irq_enable()`
+前后依次写 `O/P`，`local_fiq_enable()` 后写 `Q`，`local_abt_enable()` 后写 `R`，然后才
+进入 `cpu_startup_entry(CPUHP_AP_ONLINE_IDLE)`。CPU0 在 `wait_for_completion_timeout()` 返回后
+写小写 `o`，在清除 `secondary_data` 前写小写 `p`。这可将下一次的范围区分为“CPU1 IRQ
+开启/idle 路径”与“CPU0 completion 后续路径”。`smp.o` 反汇编确认 `N/O/P/Q/R` 对应 ASCII
+`0x4e`–`0x52`，`o/p` 对应 `0x6f/0x70`，均写入虚拟 DEBUG_LL UART。
+
+新候选仍为 10,162,688 B，SHA-256 曾更新为
+`022b226dba191770b2c6eeafc2b455313dcfd9e84c2f834f6ecf80cdf508697b`；重新生成的
+`patches/linux-5.10.262/0001-arm-phicomm-r1-secondary-uart-trace.patch` 已通过 reverse
+apply check。下一次仍只经 U-Boot `loady` 传入 RAM 后 `bootz`，没有 eMMC 写入。
+
+### CPU1 到达 idle；CPU0 PSCI CPU_ON return 追踪（2026-08-08）
+
+实机运行含 `O/P/Q/R` 的候选，输出扩展为连续 `ABCDEFGHIJKLMNOPQR`。`R` 是
+`local_abt_enable()` 返回后、调用 `cpu_startup_entry(CPUHP_AP_ONLINE_IDLE)` 前的路标，
+所以 CPU1 已完成 online、completion、IRQ/FIQ/abort 开启，并已交给通用 idle 路径。现有
+CPU0 `o/p` 没有出现；这不足以直接证明其冻结（必须以完整尾部日志复核），但把下一个
+最小疑点定位为 CPU0 发起 PSCI CPU_ON 后是否返回到 `__cpu_up()`。
+
+为消除“CPU0 卡在 SMC 内”与“SMC 已返回但 completion wait/后续路径异常”的歧义，新增六个
+小写 CPU0 路标：`a` 在调用 platform `smp_boot_secondary` 前，`s` 在
+`psci_ops.cpu_on()` 前，`t` 在它返回后，`b` 在 platform callback 返回后，`o` 在
+`wait_for_completion_timeout()` 返回后，`p` 在清除 `secondary_data` 前。由于 `s/t` 直接
+夹住 Linux 的 PSCI SMC wrapper，若实机只见 `...as` 后 CPU1 的 `A`–`R` 而始终没有 `t`，
+即可实证 CPU0 没有从 OP-TEE CPU_ON 调用返回；若见 `t/b/o/p`，则 OP-TEE 返回正常，需转查
+CPU0 后续 hotplug/调度路径。
+
+该候选重新构建成功，大小仍 10,162,688 B，SHA-256 为
+`babacc4ec7835c00e9baa8e63f38857ae109f9ee5d47898a86c5dcfc49822bb8`。它仍是纯 RAM 的
+`loady`/`bootz` 测试，不修改 eMMC；补丁 reverse apply 和工作树 whitespace 检查均通过。
+
+### PSCI CPU_ON 已返回；隔离 CPU0 completion wakeup（2026-08-08）
+
+实机完整次核相关输出为：
+
+```text
+asD/TC:0   psci_cpu_on:278 core_id: 1
+tbD/TC:1   init_secondary_helper:1133 Secondary CPU Switching to normal world boot
+ABCDEFGHIJKLMNOPQR
+```
+
+`s/t` 直接夹住 Linux `psci_ops.cpu_on()`，所以 `t` 是 CPU0 从 SMC 返回的实机证据；`b`
+说明 PSCI platform callback 也已返回。CPU1 随后跑到 `N`（`complete(&cpu_running)` 后）和
+`R`（调用通用 idle 前）。没有 `o/p` 表明 CPU0 在 `wait_for_completion_timeout()` 内未返回，
+包括预期的一秒超时；这已排除“OP-TEE 把 CPU0 留在 CPU_ON SMC 中”。
+
+为测试 CPU0 的 sleep/wakeup/IPI/调度路径是否是新的停点，追踪配置下将该等待临时改为：
+
+```c
+r1_secondary_trace('w');
+while (!try_wait_for_completion(&cpu_running))
+	cpu_relax();
+r1_secondary_trace('x');
+```
+
+它仍等待同一个 CPU1 `complete()`，但 CPU0 不再进入 scheduler，也不依赖 wakeup IPI 或 timeout
+timer。`x` 代表 CPU0 观察到 completion，随后应有 `o/p` 和正常 Linux 启动输出；若仍只有 `w`
+而没有 `x`，则 completion 的跨核可见性/一致性是直接嫌疑。此改动仅在
+`CONFIG_PHICOMM_R1_SECONDARY_UART_TRACE=y` 的诊断内核编入，不能作为最终修复。
+
+新 zImage 仍为 10,162,688 B，SHA-256 为
+`47549b71e48e268788d01f175ba0a9a184e7b7c1a373f785d872a768decb59ba`；构建、补丁 reverse
+apply 和 whitespace 检查均通过。传输方式不变：U-Boot `loady` 到 RAM 后 `bootz`，不写 eMMC。
+
+### 首个 completion 已越过；追踪通用 CPU hotplug idle completion（2026-08-08）
+
+使用 polling 候选后，实机在 CPU1 `A`–`R` 后给出 `xop`，但一分钟内仍没有 shell。`x` 证明
+CPU0 已通过 `try_wait_for_completion(&cpu_running)` 观察到 CPU1 的 completion，`o/p` 证明
+`__cpu_up()` 已返回；这排除了首个 completion 的跨核可见性问题，也证明先前的停止是 CPU0
+睡眠/wakeup 路径而非 U-Boot 传递 kernel/DTB、OP-TEE CPU_ON return 或共享 DDR 可见性。
+
+`__cpu_up()` 返回后，通用 `bringup_wait_for_ap()` 会再次等待 CPU1。在 CPU1 上，
+`cpu_startup_entry()` 调用 `cpuhp_online_idle()`，该函数依次 `stop_machine_unpark()`、设置
+`CPUHP_AP_ONLINE_IDLE` 并 complete `done_up`；CPU0 收到后才会继续后续 hotplug callbacks 和
+打印 `Brought up ...`。当前候选新增：CPU1 `S`（进入 `cpuhp_online_idle`）、`T`
+（`stop_machine_unpark` 后）、`U`（写 state 后）、`V`（`done_up` complete 后）；CPU0 `y`
+（第二个 wait 前）、`z`（观察到 completion 后）。追踪配置下 CPU0 同样以
+`try_wait_for_completion(&st->done_up)` polling 暂代可睡眠等待。
+
+新的纯 RAM 候选 10,162,688 B，SHA-256 为
+`196eb2f8e5fa638c80bf62f4631a169bcd27e45d8d33feeb44e7b09ac2de504f`。若见 `S` 无 `T`，停点
+在 `stop_machine_unpark`；若见 `V` 却无 `z`，第二 completion 的可见性有问题；若见 `z` 后仍
+停，则继续追踪 CPU hotplug callback/调度层。构建、补丁 reverse apply 和 whitespace 检查均通过；
+全程没有 eMMC 写入。
+
+### 两个 completion 均成功；追踪 CPU1 hotplug-thread reschedule SGI（2026-08-08）
+
+最新实机路标为 `ABCDEFGHIJKLMNOPQRxopSyTUVz`（并发输出中 `y` 可在 CPU1 `T` 前出现）。这证明
+CPU1 已进入 `cpuhp_online_idle()`，完成 `stop_machine_unpark()`、写 `CPUHP_AP_ONLINE_IDLE` 与
+`done_up` completion；CPU0 已观察到该 completion。因此 kernel/DTB/OP-TEE、两个跨核 completion
+及其可见性均已排除，但系统一分钟内仍未进入 shell。
+
+`z` 后 CPU0 会调用 `kthread_unpark(st->thread)` 激活绑定 CPU1 的 `cpuhp/1`，随后让它执行
+online hotplug callbacks。CPU1 此时在 idle，唤醒它依赖 reschedule SGI；这正是前两次可睡眠
+completion 均无法唤醒 CPU0 的同类机制。新候选以 `0/1/2/3` 标记 CPU0 的 online check、
+`kthread_unpark` 前后和 callback-kick 前，并在 ARM IPI 代码中以 `i/j/k` 标记“向 CPU1 发
+reschedule SGI / CPU1 IRQ handler 进入 / scheduler_ipi 返回”。若见 `i` 没有 `j`，SGI 未送达
+CPU1；若有 `j/k` 但没有 CPU0 后续 `2/3`，停在 unpark 同步；若都有，继续查 cpuhp thread 回调。
+
+新候选大小 10,162,688 B，SHA-256
+`7cf6ee88e81e465a9a85ca731f64c3fdac2b8f9042b02de73791ba0e8db539a9`。构建、补丁 reverse apply
+与 whitespace 检查均通过；仍只通过 U-Boot `loady`/`bootz` 在 RAM 中测试。
+
+### clangd 双内核源码浏览环境（2026-08-09）
+
+新增 `scripts/generate-clangd.sh`，从各 Linux `O=` 输出树已生成的 `.cmd` 文件构造 clangd
+数据库，不运行 `make`、不修改内核源码、不会访问设备：
+
+```sh
+scripts/generate-clangd.sh all
+```
+
+生成 `build/kernel/compile_commands.json`（Linux 6.18.42）和
+`build/kernel-5.10/compile_commands.json`（Linux 5.10.262）。两个源码根各有本地 `.clangd`，
+分别指向相邻输出目录并设 `/usr/bin/arm-none-eabi-gcc`。实测对两边
+`arch/arm/kernel/smp.c` 执行 `clangd --check` 都得到 `Compile command from CDB` 与
+`--target=arm-none-eabi`。`scripts/build-kernel.sh` 现在会在每次成功构建后自动刷新对应数据
+库，传 `GENERATE_COMPILE_COMMANDS=0` 可跳过。
+
+Linux 6.18.42 仍是项目的主线目标；5.10.262 只用于证明 SMP 停止不是 6.18 特有回归及承载
+当前 UART 路标诊断。两套数据库并存，避免阅读或修改错版本。
+
+### clangd 调用层级文本导出（2026-08-09）
+
+为避免编辑器 Call Hierarchy UI 无法复制到调试记录，新增
+`scripts/clangd-call-tree.py <source> <symbol> --direction incoming|outgoing --depth N`。脚本直接
+作为 JSON-RPC LSP client 查询 clangd，而不是用 grep/cflow 猜宏展开；对 incoming 查询会先解析
+包含当前函数名的候选调用文件，并随递归层级继续解析上游候选，补足 clangd 单文件索引无法找出
+跨 translation-unit caller 的限制。
+
+实测：
+
+```sh
+scripts/clangd-call-tree.py build/kernel-src/kernel/cpu.c \
+  bringup_nonboot_cpus --direction incoming --depth 5
+```
+
+输出的 6.18 静态调用链为：
+
+```text
+bringup_nonboot_cpus
+└─ smp_init
+   └─ kernel_init_freeable
+      └─ kernel_init
+         └─ rest_init
+            └─ start_kernel
+```
+
+该结果可直接重定向为 Markdown 后引用；它只描述 clangd 可解析的静态直接调用关系，不等价于
+运行时 stack trace，函数指针、汇编跳转和条件路径须继续从源码或实机路标核对。
+
+### 一键 RAM-only 开源 OP-TEE → U-Boot 启动器（2026-08-08）
+
+为消除人工执行 `db`、关闭/重开串口终端和发送 FIT 之间的竞态，新增
+`scripts/boot-r1-optee-uboot.py`，以及 bridge 的 `--start-command` 机制。调用为：
+
+```sh
+sudo python3 scripts/boot-r1-optee-uboot.py --port /dev/ttyUSB0
+```
+
+执行顺序固定为：bridge 先以 1500000 8N1、无流控独占 USB-TTL；随后才运行
+`rkdeveloptool/rkdeveloptool db build/artifacts/r1-phicomm-r1-uboot-spl-ymodem-rxfast-loader.bin`；
+bridge 从同一串口日志捕获 SPL 的 YMODEM CRC 请求 `C` 后，才运行 `sb -k -vv`，并保留此前
+验证所需的每 byte 50 µs 节流。默认 loader 和 FIT 分别强制核对 SHA-256
+`7220f8b7508cca136d87ba33098b8bf2851d9a1343a5442568ce2a8414aeda3f` 与
+`5687f549a82d3f2e0b51fe064df05a4b623ba180872c581132e6ecbe6a49cd84`；若本地重建了默认
+名字的产物，必须显式传 `--skip-default-hash-check` 才会继续，避免误传未验证镜像。
+
+脚本源代码只构造 `rkdeveloptool db <loader>`，没有 `UL`、`WL`、`EF`、`GPT`、`PRM` 或任何
+U-Boot 存储写命令；仍要求设备处于真 MaskROM，而不是普通 Rockusb Loader。离线验证已执行
+`python3 -m py_compile scripts/ymodem-serial-bridge.py scripts/boot-r1-optee-uboot.py`、两者
+`--help`，并重新计算两个默认产物的 SHA-256，均通过。尚待下一次实机使用该封装流程验证。
+
+### GIC DT A/B 与 SGI 路标候选（2026-08-09）
+
+实机在原厂两窗口 `arm,cortex-a15-gic` DT 与仅改为上游四窗口
+`arm,gic-400` 的 DT 下均停在 `ABCDEFGHIJKLMNOPQRxopSyTUVz0123`。因此 GIC compatible
+字符串和 DT 的寄存器窗口描述不解释该停点；保持后者作为后续候选 DT。
+
+下一诊断内核在 CPU0 `__cpuhp_kick_ap()` 中以 `4`–`8` 包住 `should_run`、
+`wake_up_process()` 和其后的 completion wait；GICv2 `gic_ipi_send_mask()` 向 CPU1 写
+`GICD_SGIR` 前后输出 `d/e`；CPU1 任意 IPI handler 入口/出口输出 `h/l`；CPU1
+`cpuhp/1` thread function 入口/完成输出 `W/X`。这可以区分“唤醒函数本身停止”、
+“GICD 未写 SGI”、“SGI 没到 CPU1”以及“CPU1 已收到中断却没执行 hotplug thread”。
+
+候选 `zImage-5.10-psci-v1-gic400-sgi-trace` 构建成功，SHA-256 为
+`ba6c79afc2f3672f48fe3badd4d795d722930fe7b4398b33e889fc869b8a1372`。其补丁
+`0002-arm-phicomm-r1-cpuhp-gic-sgi-trace.patch` 已通过 reverse-apply check；所有载荷仍只经
+U-Boot `loady` 放入 RAM，不写 eMMC。
+
+### 5.10 双核启动：kthread 轮询诊断回归已撤回（2026-08-10）
+
+在开源 OP-TEE → U-Boot proper 链上，带 GIC/CPU-hotplug 路标的 5.10 内核已实机证明：CPU1
+收到 PSCI `CPU_ON`、进入 normal world、收到并处理 reschedule SGI，且 CPU0 已打印
+`SMP: Total of 2 processors activated`。`smp_init()`、`sched_init_smp()`、页分配初始化和
+`cpuset_init_smp()` 也都返回；路标随后定位至 `driver_init()` 中 `devtmpfs_init()` 的
+`kthread_run()`。这是实机观察，尚不是最终根因判定。
+
+为验证该处等待，曾把 `kernel/kthread.c::__kthread_create_on_node()` 的
+`wait_for_completion_killable()` 临时改为 `try_wait_for_completion()` 加 `cpu_relax()` 轮询，并以
+`M/N/O` 记录唤醒/完成。实机只输出到 CPU0 枚举后的 `MN`，没有进入
+`smp: Bringing up secondary CPUs ...`。这是确定的诊断补丁回归：首次创建 `kthreadd` 时仍处在单核
+启动阶段，CPU0 忙等不会调用调度器，因此 `kthreadd` 无法被运行，也永远不可能完成创建请求。
+该轮询改动已完全撤回；它不构成 PSCI、GIC、设备树或 OP-TEE 的失败证据。
+
+撤回后以如下命令重建冻结的 RAM-only 内核：
+
+```sh
+KERNEL_SRC=build/kernel-src-5.10 KERNEL_BUILD=build/kernel-5.10 \
+KERNEL_EXTRA_FRAGMENT=kernel/config/r1-5.10.fragment \
+BOARD_DTS=kernel/dts/rk3229-phicomm-r1-minimal-psci-v1-gic400.dts \
+GENERATE_COMPILE_COMMANDS=0 scripts/build-kernel.sh
+cp build/artifacts/zImage \
+  build/artifacts/zImage-5.10-psci-v1-gic400-devtmpfs-trace-revert
+```
+
+产物大小为 10,162,688 B，SHA-256 为
+`d08fd99477fdb0cfd6dfb6414c42e8bbc1d5603f64a7b63316c7975b53ad5a32`，U-Boot `crc32`
+预期为 `310a09bb`。构建完成且源码/仓库的 `git diff --check` 通过。下一步只能在恢复正常可睡眠
+等待的前提下继续跟踪 `devtmpfs` 的 kthread 创建与调度，不能再对通用 kthread 创建路径做无条件忙等。
+
+随后实机以该撤回版复测，重新得到 CPU1 的 `CPU_ON`/normal-world return、`W...Y` hotplug
+路标、`SMP: Total of 2 processors activated` 和 `CPU: All CPU(s) started in SVC mode.`，末尾仍为
+`aDEidehjkl`。这重复确认正常路径在 `devtmpfs_init()` 内 `kthread_run(devtmpfsd, ...,
+"kdevtmpfs")` 返回之前停止，且不受前一次错误轮询补丁影响。
+
+下一候选只跟踪该命名为 `kdevtmpfs` 的创建请求，保持所有 completion 为标准可睡眠等待：`M/N` 为
+请求入队及唤醒 `kthreadd`，`O/P` 为 `kthreadd` 取出请求并从 `kernel_thread()` 返回，`Q/R/S` 为
+子 kthread 入口、分配 `struct kthread`、执行创建 completion，`T` 为 CPU0 从创建 completion
+返回，随后原有 `F` 才表示 `kthread_run()` 返回。`devtmpfs` 的 `setup_done` 等待也已从遗留的
+busy loop 恢复为 `wait_for_completion()`，避免越过创建点后产生第二个单核忙等。
+
+该候选是 `build/artifacts/zImage-5.10-psci-v1-gic400-kdevtmpfs-create-trace-v2`，大小
+10,162,688 B，SHA-256
+`bc405e07b076aba3745cd4ac534dbb776d8df259b5aed36ca206ad364c3cbd0b`，U-Boot `crc32` 为
+`f3c5a258`。构建和两个 `git diff --check` 均通过；尚待实机验证。
+
+### YMODEM 完成后立即释放串口并发送桌面通知（2026-08-10）
+
+`scripts/ymodem-serial-bridge.py` 原默认在 `sb` 退出后继续占用物理串口 45 秒，
+`scripts/boot-r1-optee-uboot.py` 又显式传入 30 秒，因此即使 U-Boot 已显示 `=>`，后续串口工具
+也要等待观察窗口结束。两者的 `--monitor-seconds` 默认值现均改为 `0`：YMODEM sender 退出后
+立即离开 serial context、关闭 fd，再发出完成通知。仍可显式传 `--monitor-seconds 30` 恢复
+有界日志观察。
+
+新增 `scripts/desktop_notify.py`，使用 freedesktop `notify-send`。脚本经 `sudo` 运行时从
+`SUDO_USER` 解析实际桌面用户，以 `runuser` 切回该用户并连接
+`/run/user/<uid>/bus`，适配 Fedora 44 + niri + DMS；通知失败只写 stderr，不改变下载退出码。
+独立 bridge 默认自行通知；一键 U-Boot 脚本令内部 bridge 使用 `--no-notify`，再由外层脚本只弹
+一次带完整流程语义的通知。两者均提供 `--no-notify`。
+
+`python3 -m py_compile`、两个脚本的 `--help` 和 `git diff --check` 均通过。沙箱内直接连接桌面
+D-Bus 被拒绝；获准在沙箱外运行同一 `notify-send` 后返回状态 0，验证当前桌面通知链路可达。
+
+### `kdevtmpfs` 子线程已执行至创建 completion（2026-08-10）
+
+`kdevtmpfs-create-trace-v2` 实机末尾为：
+
+```text
+aDEpMNOidePhjklQRS
+```
+
+其中 `p/M/N/O/P/Q/R/S` 证明 CPU0 已进入 `kthread_run()`、创建请求已入队、`kthreadd` 已取出
+请求且 `kernel_thread()` 返回，新 kthread 也已执行到 `complete(done)` 调用前。没有 `T` 表明创建者
+仍未从 `wait_for_completion_killable()` 返回。穿插的 `i/d/e/h/j/k/l` 是既有的 CPU0→CPU1
+reschedule SGI 发送、GIC 写入和 CPU1 handler 路标，所以它只验证该方向，不能证明反向
+CPU1→CPU0 IPI 正常。
+
+下一候选在 `complete(done)` 返回后增加 `U`，并给 devtmpfs 调用者、`kthreadd`、新 kthread
+附加 `0/1` CPU 编号。它还跟踪发往 CPU0 的 call-function IPI：`m/n` 包住 ARM
+`arch_send_call_function_single_ipi(0)`，`D/E` 包住 GICD_SGIR 写入，CPU0 handler 用
+`H...L` 包住处理过程；reschedule handler 内为 `J/K`，call-function handler 内为 `C/c`。
+这些都是路标，不改变 completion 或调度逻辑。
+
+产物为 `build/artifacts/zImage-5.10-psci-v1-gic400-kdevtmpfs-cpu0-ipi-trace-v3`，大小
+10,162,688 B，SHA-256
+`b115261f40db73b3a36625875d7ab649a523a10a874c7cd7492c21a1fc973840`，U-Boot `crc32` 为
+`ffdbaa39`。构建及源码/仓库 `git diff --check` 均通过；待 RAM-only 实机测试。
+
+### 当前 YMODEM 链上的 Rockchip TEE v2.00 严格 A/B（2026-08-10）
+
+鉴于当前停点疑似 CPU1→CPU0 completion/IPI 唤醒方向异常，重新建立 TEE-only A/B。Rockchip
+官方 `rockchip-linux/rkbin` 当前 master 的 `bin/rk32/` 目录对 RK322x 仍只提供
+`rk322x_tee_v2.00.bin`（Rockchip 发布编号，内部版本 `1.0.1-86-g31e775b`，构建日期
+2019-01-31），没有比 v2.00 更新的 RK322x TEE。该固件是 Rockchip 专有 OP-TEE 派生二进制，
+不能称为“最新版开源 OP-TEE”。来源：Rockchip 维护的 rkbin master：
+<https://github.com/rockchip-linux/rkbin/tree/master/bin/rk32>；精确 blob：
+<https://github.com/rockchip-linux/rkbin/blob/master/bin/rk32/rk322x_tee_v2.00.bin>。
+
+从官方 raw master 临时下载的当前文件与本地 `build/tee/rk322x_tee_v2.00.bin` 逐字节相同，均为
+333,896 B、SHA-256
+`a568cba05d073fc6192bcbf43b8128f2601e34fbc310e94eb85c32294b6c36f6`。新增
+`scripts/r1-ymodem-fit-dtb-rk-v2.00.its`，用当前已实机工作的 YMODEM FIT 布局生成 B 线：
+
+```text
+A: U-Boot 371360 B + open OP-TEE 423248 B + U-Boot DTB 25752 B
+B: U-Boot 371360 B + RK TEE v2.00 333896 B + U-Boot DTB 25752 B
+```
+
+`dumpimage` 分别抽取 B 线三项后，U-Boot、TEE、FDT 均与各自指定源文件 `cmp` 相同；load/entry
+仍为 `0x61000000`/`0x68400000`，configuration 仍为 `firmware=op-tee`、
+`loadables=u-boot`、`fdt=fdt-1`。因此 A/B 除 TEE payload 外不改变 loader、U-Boot、U-Boot
+DTB、Linux、Linux DTB、initramfs 或地址布局。
+
+B 线产物 `build/artifacts/r1-ymodem-fit-dtb-rk-v2.00.itb` 为 732,994 B，SHA-256
+`4ebc55f53e998d85da7dd6d812935dd87818c6953eb7dea996fa4b882019ab7e`；该哈希已加入
+`scripts/boot-r1-optee-uboot.py` 的强制校验表。全程仍只执行 RAM `rkdeveloptool db` 和 UART
+YMODEM，不写 eMMC。尚待实机 B 线启动及同一 Linux v3 路标对比。
+
+紧接 B 线测试请求后，用户回传的 v3 末尾为：
+
+```text
+aDE0pM0NO0idePhjklQ1RSmDEnU
+```
+
+按测试顺序将其作为 Rockchip TEE v2.00 B 线结果（该截取片段自身没有 TEE version 行，若实际
+仍为 A 线需更正 provenance）。`0p/M0/O0` 表明 init 创建者与 `kthreadd` 在 CPU0；`Q1` 表明
+新 kthread 在 CPU1。`S...U` 证明 CPU1 的 `complete(done)` 已完整返回；中间
+`m/D/E/n` 证明内核选择 CPU1→CPU0 call-function IPI，进入 ARM sender、执行并返回
+GICD_SGIR 写入。此后没有 CPU0 handler 的 `H`，也没有等待者返回的 `T`。所以当前直接停点是
+CPU1 已发出而 CPU0 未处理 IPI，不是 kthread 创建或 completion 本身。
+
+若该 provenance 确认为 B 线，则开源 OP-TEE 3.7 与 Rockchip TEE v2.00 在同一停点复现，排除
+“开源 OP-TEE 3.7 独有实现错误”，但仍不能排除两者共享的 RK322x secure-world 初始化假设。
+
+下一 A/B 仅在 `CONFIG_PHICOMM_R1_SECONDARY_UART_TRACE` 诊断内核中，把“CPU1 向 CPU0 发送
+IPI”由 GICv2 target-list 模式临时改为 `TargetListFilter=1`（发送给请求者之外所有 PE）。当前
+只启用 CPU0/CPU1，因此从 CPU1 发出只应命中 CPU0，绕过 `gic_cpu_map[0]`。路标 `DxxfE`
+中的 `xx` 是原 target-list map 十六进制值，`f` 表示实际采用 filter 写入。其他方向和其他 IPI
+保持原实现。
+
+候选 `build/artifacts/zImage-5.10-psci-v1-gic400-cpu1-to-cpu0-sgi-filter-ab-v4` 为
+10,166,784 B，SHA-256
+`e33874dfcf8c39352a813c4e5df8c0f5c15e8ede55b68fa7e1ad9b6755875c58`，U-Boot `crc32` 为
+`71b38bb3`。反汇编确认写入值含 GICv2 filter bit `0x01000000`；构建及两个工作树的
+`git diff --check` 通过。该版本是诊断 A/B，不是最终修复。
+
+### CPU1→CPU0 SGI target-map 排除与 GIC banked 状态快照候选（2026-08-10）
+
+v4 实机末尾为：
+
+```text
+aDE0pM0NO0idePhjklQ1RSmD01fEnU
+```
+
+`D01fE` 证明正常路径算出的 CPU0 target-list 为 `0x01`，且本次实际使用了
+`TargetListFilter=1` 并完成 GICD_SGIR 写入。此后仍没有 CPU0 IPI handler 入口 `H`，也没有
+等待者返回 `T`。因此 CPU1→CPU0 故障不是 `gic_cpu_map[0]` 或 SGIR target-list 编码错误；当前
+范围收敛到 CPU0 的 SGI 接收侧，包括 banked SGI enable/pending/active、GICC enable/PMR，及
+secure firmware 留下的 Group0/Group1 和 SoC 安全路由状态。
+
+当前 U-Boot 配置的 `# CONFIG_IRQ is not set` 已核实，现代 U-Boot 本身不负责初始化 GIC。
+Linux 5.10 的 GICv2 驱动会初始化 distributor、每 CPU interface、SGI/PPI enable 和 priority，
+但没有写 `GICD_IGROUPR0`；TrustZone 中断安全分组仍属于固件契约。旧厂商链能运行双向 IPI
+约 30 秒，只能证明旧 U-Boot/Trust OS 组合建立了可用状态，尚不能把责任单独归于旧 U-Boot。
+
+下一候选在 primary GIC 的每 CPU 初始化前后输出只读快照：
+
+```text
+G[P|A][cpu]D<gicd_ctlr>I<igroupr0>E<isenabler0>P<ispendr0>A<isactiver0>C<gicc_ctlr>M<gicc_pmr>;
+```
+
+`P/A` 分别表示 Linux 每 CPU GIC 初始化前/后。CPU0 的 `P` 已发生在 distributor 全局初始化
+之后，但该路径不写 `IGROUPR0`，且尚未清理 CPU0 banked SGI/PPI；CPU1 的 `P` 则位于其次核
+GIC 初始化入口。用同一 zImage 配合各自 PSCI DTB在旧厂商链和当前链对照，可直接比较固件
+遗留的 normal-world 可见状态。
+
+候选 `build/artifacts/zImage-5.10-psci-v1-gic400-register-snapshot-v5` 为 10,166,784 B，
+SHA-256 `5ebe13a90b52f104a45e3822506b1e97a71da376be2732a67af238dedf638bcd`，U-Boot/主机
+`crc32` 为 `f118e436`。构建、反汇编确认快照调用和两个工作树的 `diff --check` 均通过；待
+RAM-only 实机测试，不是最终修复。
+
+v5 完整日志截取到 CPU0 与 CPU1 初始化前快照开头：
+
+```text
+GP0D00000001I00000000E000000ffP00000000A00000000C00000001M000...
+GP1D00000001I00000000E000000ffP00000000A00000000C00000001M000...
+```
+
+可确定 CPU0/CPU1 pre-init 的 normal-world 可见值相同：GICD_CTLR=`1`、IGROUPR0=`0`、
+ISENABLER0=`0xff`、pending/active=`0`、GICC_CTLR=`1`。这排除 CPU0 从一开始 GICC 未使能，
+也排除两核在这些可见 banked enable/pending/active 值上的初始差异；PMR 和两个 post-init 快照
+被其他 CPU 的逐字符 UART 路标穿插或覆盖，不能可靠解码。
+IGROUPR0=`0` 本身也不能直接证明所有 SGI 属于 secure group，因为 non-secure 受限读取可能
+RAZ，且 CPU1 已实证能接收 CPU0 的 SGI。为避免再次得到半截寄存器值，v6 将快照改为单次
+`pr_emerg()` 格式化输出，由 printk 串行化；既有短路标与 v4 filter 行为保持不变。
+
+v6 产物 `build/artifacts/zImage-5.10-psci-v1-gic400-register-printk-v6` 为 10,166,784 B，
+SHA-256 `33284f675c48e0e7753163829a443ee5d0ac44d00682b7de627e812032b7ab2c`，U-Boot/主机
+`crc32` 为 `b53f1e7a`。反汇编确认 `gic_cpu_init()` 前后均调用 snapshot 且 snapshot 调用
+`printk`；构建与两个工作树 `diff --check` 均通过，待 RAM-only 实机测试。
+
+v6 实机得到四组完整快照：
+
+```text
+R1GIC P cpu0: D=00000001 I=00000000 E=000000ff P=00000000 A=00000000 C=00000001 M=00000000
+R1GIC A cpu0: D=00000001 I=00000000 E=000000ff P=00000000 A=00000000 C=00000001 M=000000f0
+R1GIC P cpu1: D=00000001 I=00000000 E=000000ff P=00000000 A=00000000 C=00000001 M=00000000
+R1GIC A cpu1: D=00000001 I=00000000 E=000000ff P=00000000 A=00000000 C=00000001 M=000000f0
+```
+
+CPU0/CPU1 的 normal-world 可见 pre/post 状态逐字段相同；Linux 每 CPU 初始化在这些字段中唯一
+可见变化是把 GICC_PMR 从 `0` 设为 `0xf0`。因此当前故障不是 DT 指向错误 GIC window、某核
+GICC_CTLR 未使能、某核 SGI enable 缺失、可见 pending/active 残留，或 Linux 两核执行出不同
+的 `gic_cpu_init()` 结果。结合 v4 filter A/B，下一检查点应是 CPU0 调用 PSCI_CPU_ON 前后以及
+进入 kdevtmpfs completion 等待前的本地 IRQ/CPSR 状态；若这些正常，则首要嫌疑转为
+normal world 读不到的 banked secure Group0/Group1 或 RK322x 安全 IRQ 路由。
+
+### PSCI_CPU_ON 前后与 completion 等待前 GIC/CPSR 快照 v7（2026-08-10）
+
+在 v6 基础上新增三个 CPU0 runtime 快照：`B` 位于 `psci_ops.cpu_on()` 调用前，`R` 位于
+SMC 返回后，`W` 位于 kdevtmpfs 创建者进入 `wait_for_completion_killable()` 前。所有快照
+附加读取 GICC_HPPIR (`H`)、GICC_RPR (`R`) 和当前 CPSR (`X`)；_HPPIR 是只读的最高优先级
+pending 查询，不会像 IAR 一样 acknowledge/消费中断。既有 v4 TargetListFilter A/B 和其他
+路标不变。
+
+候选 `build/artifacts/zImage-5.10-psci-v1-gic400-psci-wait-state-v7` 为 10,166,784 B，
+SHA-256 `533f4c8b2f2354b6ff3425cae92eaac40ba0a5f0d46389f2c954d9f3371fe3bb`，U-Boot/主机
+`crc32` 为 `712226dd`。构建、两个工作树 `diff --check` 均通过；`nm/objdump` 确认最终
+`vmlinux` 含 `r1_gic_trace_runtime`，PSCI 路径有两次调用，kthread 路径有一次调用。该候选
+仅增加只读诊断，不写 eMMC，待 RAM-only 实机测试。
+
+v7 实机关键值为：
+
+```text
+R1GIC B cpu0: E=600000ff P=40000000 C=00000001 M=000000f0 H=0000001e R=00000000 X=60000053
+R1GIC R cpu0: E=600000ff P=40000000 C=00000001 M=000000f0 H=0000001e R=00000000 X=60000053
+R1GIC W cpu0: E=600000ff P=40000000 C=00000001 M=000000f0 H=0000001e R=00000000 X=60000053
+```
+
+`E=0x600000ff` 表明 SGI 0–7 及 PPI 29/30 已使能；`P=0x40000000` 表明 PPI 30 pending；
+`H=0x1e` 表明 GICC_HPPIR 已把 INTID 30 选为当前最高优先级 pending interrupt；`C=1`、
+`M=0xf0` 表明 GICC CPU interface 和 priority mask 允许投递。CPSR `X=0x60000053` 的 I bit
+(`0x80`) 为零，CPU0 本地 IRQ 未 mask。该状态从 `PSCI_CPU_ON` 前的 `B` 到返回后的 `R` 再到
+completion 等待前的 `W` 完全不变，因此 `PSCI_CPU_ON` 不是破坏 CPU0 可见 GIC 状态的动作。
+
+这是当前最强的实机结论：GIC CPU interface 已有一个对 normal-world 可见且优先级合格的
+physical timer PPI 30，但 CPU0 没有进入 IRQ exception/acknowledge；故障位于 GICC 输出到
+CPU0 normal-world 异常入口之间，而不是 SGI target、completion、DT GIC window 或 Linux
+GIC 初始化。首要嫌疑是 secure monitor 的每核异常路由状态（例如 CPU0 与 CPU1 的 secure
+banked Group/IRQ routing handoff 差异）；这类状态不能由 normal world Linux 直接修复或读取。
+
+此外，v7 暴露出决定性的主/次核非对称：CPU0 从最早的 `P/A` 到 `B/R/W`，GICC_RPR 始终为
+`0x00`；CPU1 的 `P/A` 则为正常 idle priority `0xff`。RPR=`0x00` 表示 CPU0 的 GIC CPU
+interface 仍认为有一个最高优先级 interrupt 正在运行，普通优先级的 PPI 30 和 SGI 无法抢占。
+CPU0 的 normal-world `ISACTIVER0=0` 与此并不矛盾：未完成的 active interrupt 或 active
+priority 可能属于 secure bank/Group0，普通世界读取不到。因该异常状态在 Linux GIC 初始化
+前已经存在，且 Linux 清理 normal-world APR 后仍为 `0x00`，当前最具体的根因假设是 OP-TEE
+主核切回 normal world 前没有 EOI/deactivate 某个 secure interrupt，或没有清理 secure APR；
+次核路径没有该残留。下一修复应进入 secure-world GIC 主核初始化/交接路径，而不是再改 Linux DT。
+
+同一 v7 随后在严格 B 线 Rockchip RK322x TEE v2.00 上得到相同的主/次核 RPR 非对称：CPU0
+从 `P/A` 到 `B/R/W` 均为 `R=0x00`，CPU1 为 `R=0xff`。B 线的 CPU0 还显示
+`E=0x400000ff`、`P=0x40000000`，但 HPPIR=`0x3ff`；即 PPI 30 已 enable/pending，却因当前
+running priority 已是最高优先级而没有 eligible interrupt。该结果正式排除“开源 OP-TEE
+3.7 独有错误”；开源 3.7 与专有 Rockchip v2.00 都没有消除当前 hybrid 链主核的 active
+priority 状态。
+
+尚未区分该状态由 vendor DDR/BootROM/现代 SPL 在进入 TEE 前遗留，还是两套同源 RK322x TEE
+主核初始化共同产生。下一最小证据应由仍在 secure state 的 SPL 在跳入 TEE 前只读打印
+GICC_RPR/APR；若此时 RPR 已为 `0x00`，修复点在前级 loader/SPL 清理，若为 `0xff` 而 Linux
+入口变为 `0x00`，修复点在 TEE 主核初始化/normal-world handoff。
+
+### secure SPL 跳入 TEE 前 GIC active-priority 快照候选（2026-08-10）
+
+在当前 RX-fast YMODEM SPL 的 `jump_to_image_optee()` 中加入两次只读 GIC 快照：`GB` 位于
+`cleanup_before_linux()` 前，`GA` 位于其后、最终 `R/T` 路标前。两次都运行在进入 TEE 前的
+CPU0 secure SPL 上，读取：GICC_RPR、GICC_CTLR、GICC_PMR、secure-view GICD_IGROUPR0、
+GICC_APR0–APR3，并按 GICD_TYPER 给出的 implemented group 数扫描所有非零
+GICD_ISACTIVERn。输出格式为：
+
+```text
+{G[B|A]R<rpr>C<ctlr>M<pmr>I<igroup>A0<apr0>...A3<apr3>V<index><active>...}
+```
+
+若所有 ISACTIVERn 为零则输出 `V-`。该探针不读取 GICC_IAR，因而不会 acknowledge 或消费
+中断；也不写任何 GIC/eMMC 状态。构建仍使用当前已验证的 vendor DDR 471、RX-fast SPL 与
+YMODEM 外置 FIT，`rkdeveloptool pack` 只生成本地容器。
+
+产物 `build/artifacts/r1-phicomm-r1-uboot-spl-ymodem-gic-pretee-trace-loader.bin` 为
+854,293 B，SHA-256
+`05b804d7bfdbd403c187f379dd23e332e808d75e8c0dc99d85c0cccea9f8d810`，主机 CRC32
+`f3c48aa7`，pack 保存 CRC `0x3f9d4eb6`。其 472 源为 836,608-byte
+`u-boot-rockchip-usb472.bin`，SHA-256
+`f649043761afbfd1541dd817595ec01d7271d79b7394d73ec5756721dd19d5a4`。离线 unpack 后，
+471/FlashData 的前 7,196 bytes 与已验证 vendor DDR 逐字节相同，472 的前 836,608 bytes 与
+本次 binman 产物逐字节相同；padding 大小符合 pack 对齐。SPL `nm/objdump` 确认 snapshot
+函数、两个调用及物理 GICD/GICC 地址 `0x32011000/0x32012000` 均进入最终二进制。
+一键脚本已加入该候选的强制 SHA-256 校验。
+
+### secure SPL 实机结果与 INTID 55 精确清理 A/B（2026-08-10）
+
+只读探针实机在 `Q` 后得到：
+
+```text
+{GBR00000000C00000001M000000f8I00000000A000000001A100000000A200000000A300000000V0100800000}
+{GAR00000000C00000001M000000f8I00000000A000000001A100000000A200000000A300000000V0100800000}
+```
+
+`GB` 与 `GA` 完全相同，证明 `cleanup_before_linux()` 没有改变该状态。进入 OP-TEE 前 CPU0
+已经是 GICC_RPR=`0`、GICC_APR0=`1`；扫描结果 `V01 00800000` 表示唯一 active 位位于
+GICD_ISACTIVER1 bit 23，即 INTID `32 + 23 = 55`。这是 R1 实机验证事实，正式排除“该 active
+priority 由开源 OP-TEE 主核初始化新产生”。上游 Linux 源码
+`arch/arm/boot/dts/rockchip/rk322x.dtsi` 将 `usb@30040000` 配置为 `GIC_SPI 23`，因此
+INTID 55 对应 RK322x USB OTG。由 MaskROM/RockUSB USB 下载路径遗留该 active interrupt 是
+当前最强推断；旧厂商完整链是否主动清理仍待对照。
+
+基于该唯一签名构建下一 A/B。`r1_spl_gic_cleanup_stale_usb_otg()` 仅在 RPR=`0`、APR0=`1`、
+APR1–3=`0` 且所有 active 位只有 INTID 55 时执行；它短暂关闭 GICC，写
+GICD_ICENABLER1/ICPENDR1/ICACTIVER1 bit 23，清 GICC_APR0，恢复原 GICC_CTLR 并执行
+barrier。若签名不匹配则完全跳过。清理后新增 `GC` 只读快照，预期成功特征为 RPR=`ff`、
+APR0=`0`、`V-`。
+
+构建命令：
+
+```sh
+make -C build/u-boot CROSS_COMPILE=arm-none-eabi- DTC=/usr/bin/dtc TEE=tee.bin -j8
+(cd rkdeveloptool && ./rkdeveloptool pack)
+```
+
+产物 `build/artifacts/r1-phicomm-r1-uboot-spl-ymodem-gic-int55-cleanup-ab-loader.bin` 为
+854,293 B，SHA-256
+`ff47e369966feac248510aaa7577e54484e3ecfb80a53fef0f99d818d087bd50`，主机 CRC32
+`7ff26f3d`，pack 保存 CRC `0x27d5d4d8`。472 源为 836,800 B，SHA-256
+`329e151de3ef8baa864481267b8fcee24dec569dad9321c05ade38879511bba0`。离线 unpack 后，
+471、472、FlashData 的有效字节均与输入逐字节相同，padding 全零；构建、补丁 reverse-apply、
+脚本语法与两个工作树的 `diff --check` 均通过。该产物只供 RAM `db`，不含 eMMC 写操作。
+
+### INTID 55 清理实机成功与 clean Linux v8（2026-08-10）
+
+精确清理 loader 实机输出：
+
+```text
+{GCR000000ffC00000001M000000f8I00000000A000000000A100000000A200000000A300000000V-}
+```
+
+触发前的 `GB/GA` 仍复现 RPR=`0`、APR0=`1`、INTID 55 唯一 active；`GC` 则准确恢复
+RPR=`0xff`、所有 APR 为零且无 active interrupt，证明签名匹配、清理写入生效。OP-TEE 3.7
+随后正常初始化并进入 U-Boot proper。
+
+同一 v7 Linux 的 CPU0 首次 GIC 快照已经变为 RPR=`0xff`、HPPIR=`0x3ff`，CPU1 拉起后两核
+同样为 RPR=`0xff`；此前持续 pending 的 PPI 30 不再出现。CPU1 online、CPU hotplug、
+kdevtmpfs kthread 创建与 completion 全部完成，串口明确出现 `devtmpfs: initialized`，并继续
+到 VFP、pinctrl、NET、DMA 与 cpuidle 初始化。由此验证旧的 CPU0 IRQ/SGI 死锁由进入 TEE 前
+遗留的 INTID 55/APR0 直接造成，不是 Linux DT、PSCI CPU_ON 或开源 OP-TEE 独有错误。
+
+该次 v7 在约 0.051 秒后未继续输出，但它包含累计 436 行的逐字符 UART 路标、polling
+completion 和 GIC SGI TargetListFilter A/B，故不能把新边界直接归因于正常内核。保留当前
+诊断源码不动，另从原始 Linux 5.10.262 commit
+`065a677fad98698de04279ba2cb152a472ab8b1f` 的 clean clone 完整重建。clean v8 使用同一
+`rk3229-phicomm-r1-minimal-psci-v1-gic400.dtb` 和 kernel command line，但不含任何
+`PHICOMM_R1_SECONDARY_UART_TRACE` symbol、R1 trace symbol/string、polling completion 或
+SGI filter 改写。
+
+可复现构建命令（临时 clone 用于隔离现有诊断源码工作树）：
+
+```sh
+git clone --shared --no-checkout build/kernel-src-5.10 /tmp/r1-linux-5.10-clean-src
+git -C /tmp/r1-linux-5.10-clean-src checkout --detach 065a677fad98
+KERNEL_SRC=/tmp/r1-linux-5.10-clean-src \
+KERNEL_BUILD=build/kernel-5.10-clean \
+KERNEL_EXTRA_FRAGMENT=kernel/config/r1-5.10-clean.fragment \
+BOARD_DTS=kernel/dts/rk3229-phicomm-r1-minimal-psci-v1-gic400.dts \
+JOBS=8 scripts/build-kernel.sh
+cp build/artifacts/zImage \
+  build/artifacts/zImage-5.10-psci-v1-gic400-clean-post-int55-v8
+```
+
+产物 `build/artifacts/zImage-5.10-psci-v1-gic400-clean-post-int55-v8` 为 10,166,784 B，
+SHA-256 `fc5d1e207ffc143c2d34cb59296f0e9b07b3051e7e085404f37873e2d85cd5e7`，CRC32
+`a262021a`。配置副本 SHA-256 为
+`32fd6d306d45fd7218d37705be7d5b33477d91e8636eda0bc81eff24b3df3e7e`；重新生成的 DTB 与
+既有 GIC400 DTB 逐字节一致，SHA-256
+`3a8b8685652f39690edc2141454a7f397ced99f4563975a84a1f2c39fd660a12`。构建成功，`nm` 与
+`strings` 均确认无 R1 诊断符号/文本，源码 clone 保持 clean；待 RAM-only 实机验证。
+
+### clean v8 双核进入 shell，用户确认超过 30 秒（2026-08-10）
+
+clean v8 实机启动日志确认：
+
+```text
+Linux version 5.10.262-phicomm-r1 ... #1 SMP
+psci: PSCIv1.0 detected in firmware.
+smp: Brought up 1 node, 2 CPUs
+SMP: Total of 2 processors activated (96.00 BogoMIPS).
+[    0.046235] No ATAGs?
+[    2.078554] Run /init as init process
+Linux (none) 5.10.262-phicomm-r1 #1 SMP ... armv7l GNU/Linux
+/bin/sh: can't access tty; job control turned off
+#
+```
+
+这直接验证实际运行的是 clean v8 而非 `-dirty #24` 的 v7，并证明它正常越过 v7 最后的
+`No ATAGs?` 可见位置、完成双核 SMP、运行 `/init` 并进入交互 shell。保存日志
+`build/artifacts/clean-v8-open-optee-first-shell-20260810.log` 为 15,438 B，SHA-256
+`035930590c099a04285d6ee2db955d156e63e75fc26e6d150eb6097469d960e1`。
+
+用户明确报告本次 uptime 已超过 30 秒，满足本轮目标；但附件末尾实际只保存：
+
+```text
+# while true; do cat /proc/uptime; sleep 5; done
+8.99 15.92
+/bin/sh: sleep: not found
+```
+
+因此证据分类为：双核进入 shell 与 uptime 8.99 秒由日志直接验证；超过 30 秒为用户实机确认。
+原因不是系统在 8.99 秒停止，而是 initramfs 没有生成 `sleep` applet 链接。后续可复现的串口
+留档命令应为：
+
+```sh
+while true; do cat /proc/uptime; /bin/busybox sleep 5; done
+```
+
+本轮结论：当前 RAM-only 链的 SMP 冻结根因已定位并修复。MaskROM/RockUSB 遗留 USB OTG
+INTID 55 active 与 APR0=`1`，使 CPU0 GICC_RPR 保持最高优先级 `0`，阻止 timer PPI 与
+CPU1→CPU0 SGI；SPL 在严格签名匹配时清理该状态后，开源 OP-TEE 3.7、主线 U-Boot 和
+clean Linux 5.10.262 双核链完整进入 shell。未执行 eMMC 写入。

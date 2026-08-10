@@ -11,3 +11,7 @@
 # certificate plumbing from this version-comparison image.
 # CONFIG_CFG80211 is not set
 # CONFIG_SYSTEM_TRUSTED_KEYRING is not set
+
+# The 5.10 open-source OP-TEE test needs to identify CPU1's exact first-stop
+# point. This emits A/B/C/D/E only from secondary_startup.
+CONFIG_PHICOMM_R1_SECONDARY_UART_TRACE=y

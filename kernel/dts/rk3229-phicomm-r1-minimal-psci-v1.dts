@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+
+/*
+ * One-variable companion to rk3229-phicomm-r1-minimal.dts for the open
+ * source RK322x OP-TEE test. Keep the CPU, GIC, timer, UART and RAM layout
+ * identical; only select the standard PSCI v0.2/1.0 DT binding.
+ */
+
+#include "rk3229-phicomm-r1-minimal.dts"
+
+&{/psci} {
+	compatible = "arm,psci-1.0", "arm,psci-0.2";
+	/delete-property/ cpu_suspend;
+	/delete-property/ cpu_off;
+	/delete-property/ cpu_on;
+};

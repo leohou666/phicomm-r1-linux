@@ -1,0 +1,14 @@
+# Linux 5.10's multi_v7_defconfig selects the ARM per-task stack-canary GCC
+# plugin. The available cross compiler's plugin headers require host gmp.h,
+# which is not installed. Keep the normal strong stack protector, but avoid
+# this optional build-host plugin.
+# CONFIG_GCC_PLUGINS is not set
+# CONFIG_STACKPROTECTOR_PER_TASK is not set
+
+# The minimal diagnostic DT has no Wi-Fi node. Avoid the unused signed-regdb
+# certificate toolchain in this Linux-version comparison image.
+# CONFIG_CFG80211 is not set
+# CONFIG_SYSTEM_TRUSTED_KEYRING is not set
+
+# This is the post-GIC-cleanup baseline: no UART path probes, polling
+# completions, GIC register snapshots, or SGI TargetListFilter A/B code.
