@@ -4,7 +4,7 @@
 The script deliberately limits its Rockchip action to ``rkdeveloptool db``.
 It opens the USB-TTL first, runs db only after that port is exclusively owned,
 waits for the SPL YMODEM CRC request, and then sends the known-good FIT with
-the measured 50-us per-byte pacing. It never writes eMMC.
+configurable per-byte pacing (50 us by default). It never writes eMMC.
 """
 
 from __future__ import annotations
@@ -21,17 +21,24 @@ from desktop_notify import notify
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_LOADER = ROOT / "build/artifacts/r1-phicomm-r1-uboot-spl-ymodem-rxfast-loader.bin"
+RXFAST_LOADER = ROOT / "build/artifacts/r1-phicomm-r1-uboot-spl-ymodem-rxfast-loader.bin"
 GIC_PRETEE_TRACE_LOADER = ROOT / "build/artifacts/r1-phicomm-r1-uboot-spl-ymodem-gic-pretee-trace-loader.bin"
 GIC_INT55_CLEANUP_LOADER = ROOT / "build/artifacts/r1-phicomm-r1-uboot-spl-ymodem-gic-int55-cleanup-ab-loader.bin"
+GIC_INT55_CLEANUP_DIRECT_RX_LOADER = ROOT / "build/artifacts/r1-phicomm-r1-uboot-spl-ymodem-gic-int55-cleanup-directrx-loader.bin"
+USB_DFU_RAM_LOADER = ROOT / "build/artifacts/r1-phicomm-r1-uboot-spl-ymodem-gic-int55-cleanup-directrx-usb-dfu-ram-loader.bin"
+DEFAULT_LOADER = GIC_INT55_CLEANUP_LOADER
 DEFAULT_FIT = ROOT / "build/artifacts/r1-ymodem-fit-dtb.itb"
 RK_V2_FIT = ROOT / "build/artifacts/r1-ymodem-fit-dtb-rk-v2.00.itb"
+USB_DFU_RAM_FIT = ROOT / "build/artifacts/r1-ymodem-fit-dtb-usb-dfu-ram.itb"
 EXPECTED_SHA256 = {
-    DEFAULT_LOADER: "7220f8b7508cca136d87ba33098b8bf2851d9a1343a5442568ce2a8414aeda3f",
+    RXFAST_LOADER: "7220f8b7508cca136d87ba33098b8bf2851d9a1343a5442568ce2a8414aeda3f",
     GIC_PRETEE_TRACE_LOADER: "05b804d7bfdbd403c187f379dd23e332e808d75e8c0dc99d85c0cccea9f8d810",
     GIC_INT55_CLEANUP_LOADER: "ff47e369966feac248510aaa7577e54484e3ecfb80a53fef0f99d818d087bd50",
+    GIC_INT55_CLEANUP_DIRECT_RX_LOADER: "ee8466d7217c5b9d52990d6c4393d32c4aeb8c63f92cdddfc6b02eb4e06e3015",
+    USB_DFU_RAM_LOADER: "466b4e8ae6e6cccf6009d591d42bb12c7451ec01cce1576e03358a44545fa359",
     DEFAULT_FIT: "5687f549a82d3f2e0b51fe064df05a4b623ba180872c581132e6ecbe6a49cd84",
     RK_V2_FIT: "4ebc55f53e998d85da7dd6d812935dd87818c6953eb7dea996fa4b882019ab7e",
+    USB_DFU_RAM_FIT: "ba1cd6347454ee79dca66ba843f63bab9cfc0cf8a1c7daaa506b4eef317572f5",
 }
 
 

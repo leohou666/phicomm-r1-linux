@@ -1,0 +1,255 @@
+# Phicomm R1 clean four-core rescue baseline.
+#
+# Merge over allnoconfig, then enable only RK322x and the subsystems needed by
+# the RAM rescue environment.  Wi-Fi, Bluetooth and audio are intentionally
+# layered on later with their DT nodes.
+
+CONFIG_LOCALVERSION="-phicomm-r1-rescue-v11"
+CONFIG_CMDLINE="earlyprintk console=ttyS2,1500000n8 loglevel=8 ignore_loglevel cpufreq.off=1 nohz=off clocksource.arm_arch_timer.evtstrm=0 rdinit=/init"
+CONFIG_CMDLINE_FORCE=y
+
+# ARMv7-A MMU platform baseline.  These must be explicit when this fragment is
+# merged over allnoconfig; otherwise Kconfig legitimately chooses Cortex-M
+# NOMMU and still produces a zImage that is unusable on RK3229.
+CONFIG_MMU=y
+CONFIG_ARCH_MULTIPLATFORM=y
+CONFIG_ARCH_MULTI_V7=y
+CONFIG_CPU_V7=y
+CONFIG_SMP=y
+CONFIG_NR_CPUS=4
+CONFIG_AEABI=y
+CONFIG_VFP=y
+CONFIG_NEON=y
+CONFIG_HIGH_RES_TIMERS=y
+CONFIG_BINFMT_ELF=y
+CONFIG_BINFMT_SCRIPT=y
+CONFIG_PRINTK=y
+CONFIG_TTY=y
+# CONFIG_VT is not set
+# CONFIG_SWAP is not set
+
+# Baseline Linux userspace ABI.  allnoconfig disables many of these even
+# though shells, libc, event loops and service managers normally assume them.
+CONFIG_MULTIUSER=y
+CONFIG_SYSVIPC=y
+CONFIG_POSIX_TIMERS=y
+CONFIG_COMPAT_32BIT_TIME=y
+CONFIG_FHANDLE=y
+CONFIG_BUG=y
+CONFIG_ELF_CORE=y
+CONFIG_BASE_FULL=y
+CONFIG_FUTEX=y
+CONFIG_EPOLL=y
+CONFIG_SIGNALFD=y
+CONFIG_TIMERFD=y
+CONFIG_EVENTFD=y
+CONFIG_AIO=y
+CONFIG_ADVISE_SYSCALLS=y
+CONFIG_MEMBARRIER=y
+CONFIG_RSEQ=y
+CONFIG_COREDUMP=y
+CONFIG_CORE_DUMP_DEFAULT_ELF_HEADERS=y
+CONFIG_INOTIFY_USER=y
+
+# The rescue archive is gzip-compressed.  Do not carry five other initrd
+# decompressors that cannot be reached by this boot path.
+CONFIG_RD_GZIP=y
+# CONFIG_RD_BZIP2 is not set
+# CONFIG_RD_LZMA is not set
+# CONFIG_RD_XZ is not set
+# CONFIG_RD_LZO is not set
+# CONFIG_RD_LZ4 is not set
+# CONFIG_RD_ZSTD is not set
+
+# Build-host-only exclusions used by the clean 5.10 baseline.
+# CONFIG_GCC_PLUGINS is not set
+# CONFIG_STACKPROTECTOR_PER_TASK is not set
+# CONFIG_CFG80211 is not set
+# CONFIG_SYSTEM_TRUSTED_KEYRING is not set
+
+# Keep only the Rockchip platform.
+# CONFIG_ARCH_VIRT is not set
+# CONFIG_ARCH_ALPINE is not set
+# CONFIG_ARCH_ARTPEC is not set
+# CONFIG_ARCH_ASPEED is not set
+# CONFIG_ARCH_AT91 is not set
+# CONFIG_ARCH_BCM is not set
+# CONFIG_ARCH_BERLIN is not set
+# CONFIG_ARCH_DIGICOLOR is not set
+# CONFIG_ARCH_EXYNOS is not set
+# CONFIG_ARCH_HIGHBANK is not set
+# CONFIG_ARCH_HISI is not set
+# CONFIG_ARCH_MXC is not set
+# CONFIG_ARCH_KEYSTONE is not set
+# CONFIG_ARCH_MEDIATEK is not set
+# CONFIG_ARCH_MESON is not set
+# CONFIG_ARCH_MILBEAUT is not set
+# CONFIG_ARCH_MMP is not set
+# CONFIG_ARCH_MVEBU is not set
+# CONFIG_ARCH_OMAP is not set
+# CONFIG_ARCH_OMAP2PLUS is not set
+# CONFIG_ARCH_SIRF is not set
+# CONFIG_ARCH_QCOM is not set
+CONFIG_ARCH_ROCKCHIP=y
+# CONFIG_ARCH_RENESAS is not set
+# CONFIG_ARCH_SOCFPGA is not set
+# CONFIG_PLAT_SPEAR is not set
+# CONFIG_ARCH_STI is not set
+# CONFIG_ARCH_STM32 is not set
+# CONFIG_ARCH_SUNXI is not set
+# CONFIG_ARCH_TEGRA is not set
+# CONFIG_ARCH_UNIPHIER is not set
+# CONFIG_ARCH_U8500 is not set
+# CONFIG_ARCH_VEXPRESS is not set
+# CONFIG_ARCH_VT8500 is not set
+# CONFIG_ARCH_ZYNQ is not set
+
+# The rescue image is self-contained; no loadable modules are shipped.
+# CONFIG_MODULES is not set
+
+# CPU frequency changes remain disabled during bring-up.  Keep PSCI, SMP,
+# arch timer, VFP and NEON selected by the Rockchip/ARM platform.
+# CONFIG_CPU_FREQ is not set
+CONFIG_HOTPLUG_CPU=y
+CONFIG_ARM_PSCI=y
+CONFIG_CPU_IDLE=y
+CONFIG_CPU_IDLE_GOV_MENU=y
+CONFIG_CPU_PM=y
+
+# Retain the normal IPv4/IPv6/Unix network stack for later userspace work, but
+# do not build unrelated Ethernet, CAN, WLAN or Bluetooth device drivers yet.
+CONFIG_NET=y
+CONFIG_UNIX=y
+CONFIG_PACKET=y
+CONFIG_INET=y
+CONFIG_IPV6=y
+# CONFIG_CAN is not set
+# CONFIG_BT is not set
+# CONFIG_WIRELESS is not set
+# CONFIG_NETDEVICES is not set
+# CONFIG_NFC is not set
+
+# R1 has no PCI/PCIe path in the recovered board description and boots from
+# eMMC, not raw NAND/NOR/UBI.
+# CONFIG_PCI is not set
+# CONFIG_MTD is not set
+
+# Minimal virtual filesystems and ext4 for future read-only eMMC inspection.
+CONFIG_BLOCK=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_PROC_FS=y
+CONFIG_SYSFS=y
+CONFIG_TMPFS=y
+CONFIG_SHMEM=y
+CONFIG_EXT4_FS=y
+# CONFIG_NETWORK_FILESYSTEMS is not set
+# CONFIG_NFS_FS is not set
+# CONFIG_NFSD is not set
+# CONFIG_CIFS is not set
+# CONFIG_9P_FS is not set
+# CONFIG_NTFS_FS is not set
+# CONFIG_SQUASHFS is not set
+# CONFIG_UBIFS_FS is not set
+# CONFIG_F2FS_FS is not set
+
+# eMMC uses the native MMC block layer; no SCSI command layer is needed.
+# CONFIG_SCSI is not set
+# CONFIG_BLK_DEV_BSG is not set
+
+# No display, camera, input, HID or sound hardware is needed for the serial
+# rescue baseline.  Audio will be enabled with the AK7755/I2S2 DT stage.
+# CONFIG_INPUT is not set
+# CONFIG_HID is not set
+# CONFIG_MEDIA_SUPPORT is not set
+# CONFIG_DRM is not set
+# CONFIG_FB is not set
+# CONFIG_SOUND is not set
+
+# Keep only the serial path used by R1 UART2.
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_8250_DW=y
+# CONFIG_SERIAL_8250_PCI is not set
+# CONFIG_SERIAL_AMBA_PL011 is not set
+# CONFIG_SERIAL_ATMEL is not set
+# CONFIG_SERIAL_MESON is not set
+# CONFIG_SERIAL_SAMSUNG is not set
+# CONFIG_SERIAL_TEGRA is not set
+# CONFIG_SERIAL_IMX is not set
+# CONFIG_SERIAL_SH_SCI is not set
+# CONFIG_SERIAL_MSM is not set
+# CONFIG_SERIAL_OMAP is not set
+# CONFIG_SERIAL_XILINX_PS_UART is not set
+# CONFIG_SERIAL_FSL_LPUART is not set
+# CONFIG_SERIAL_ST_ASC is not set
+# CONFIG_SERIAL_STM32 is not set
+
+# Preserve the R1 storage and power building blocks for the full-DT stage.
+CONFIG_MMC=y
+CONFIG_MMC_DW=y
+CONFIG_MMC_DW_ROCKCHIP=y
+CONFIG_I2C=y
+CONFIG_I2C_RK3X=y
+CONFIG_MFD_RK808=y
+CONFIG_REGULATOR=y
+CONFIG_REGULATOR_FIXED_VOLTAGE=y
+CONFIG_REGULATOR_RK808=y
+CONFIG_RTC_CLASS=y
+CONFIG_RTC_HCTOSYS=y
+CONFIG_RTC_DRV_RK808=y
+
+# ARCH_ROCKCHIP exposes clock drivers for every supported Rockchip SoC.  R1
+# only needs RK322x; make that selection explicit for the whitelist build.
+# CONFIG_CLK_PX30 is not set
+# CONFIG_CLK_RV110X is not set
+# CONFIG_CLK_RK3036 is not set
+# CONFIG_CLK_RK312X is not set
+# CONFIG_CLK_RK3188 is not set
+CONFIG_CLK_RK322X=y
+# CONFIG_CLK_RK3288 is not set
+# CONFIG_CLK_RK3308 is not set
+# CONFIG_CLK_RK3328 is not set
+# CONFIG_CLK_RK3368 is not set
+# CONFIG_CLK_RK3399 is not set
+# CONFIG_ARM_GLOBAL_TIMER is not set
+
+# Preserve Rockchip USB host/device controller support, but omit USB classes
+# and unrelated controllers.  The minimal SMP DT does not probe these yet.
+CONFIG_USB_SUPPORT=y
+CONFIG_USB_COMMON=y
+CONFIG_USB=y
+CONFIG_USB_DWC2=y
+CONFIG_USB_EHCI_HCD=y
+CONFIG_USB_EHCI_HCD_PLATFORM=y
+CONFIG_USB_OHCI_HCD=y
+CONFIG_USB_OHCI_HCD_PLATFORM=y
+CONFIG_PHY_ROCKCHIP_USB=y
+# CONFIG_USB_XHCI_HCD is not set
+# CONFIG_USB_DWC3 is not set
+# CONFIG_USB_STORAGE is not set
+# CONFIG_USB_NET_DRIVERS is not set
+# CONFIG_USB_GADGET is not set
+
+# Ramoops remains useful, but the resolved IRQ issue no longer needs function
+# tracing or persistent per-function call records.
+CONFIG_MISC_FILESYSTEMS=y
+CONFIG_PSTORE=y
+CONFIG_PSTORE_RAM=y
+CONFIG_PSTORE_CONSOLE=y
+# CONFIG_PSTORE_DEFLATE_COMPRESS is not set
+# CONFIG_FUNCTION_TRACER is not set
+# CONFIG_PSTORE_FTRACE is not set
+
+# Keep low-cost diagnostics that make a rescue kernel inspectable.
+CONFIG_IKCONFIG=y
+CONFIG_IKCONFIG_PROC=y
+CONFIG_KALLSYMS=y
+CONFIG_PRINTK_TIME=y
+CONFIG_MAGIC_SYSRQ=y
+CONFIG_MAGIC_SYSRQ_SERIAL=y
+
+# Avoid firmware interfaces and heavyweight generic debug facilities unused by
+# this board.
+# CONFIG_EFI is not set
+# CONFIG_DEBUG_FS is not set

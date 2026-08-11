@@ -63,7 +63,7 @@
 - [x] 封装 RAM-only `db`、串口独占、等待 SPL YMODEM CRC 和节流 FIT 发送的一键启动器；默认产物 SHA-256 强制校验且不含 eMMC 写命令
 - [x] YMODEM/一键 U-Boot 脚本默认在发送完成后立即释放串口，并通知 Fedora/niri 桌面会话
 - [x] 生成当前 YMODEM 链的 Rockchip 官方 RK322x TEE v2.00 严格 A/B FIT，并离线验证唯一载荷变量
-- [x] 在该 U-Boot 提示符只读加载 zImage、recovery initramfs 与 DTB，启动 clean v8 双核 Linux 进入 shell；用户实机确认 uptime 超过 30 秒
+- [x] 在该 U-Boot 提示符只读加载 zImage、recovery initramfs 与 DTB，启动 clean v8 双核 Linux 进入 shell；用户实机确认 uptime 约 700 秒
 - [x] 用同一 kernel/initramfs 仅替换为 PSCI 1.0/0.2 DTB；Linux 正确检出 PSCI v1.0，但 CPU1 仍停在开源 OP-TEE 的 normal-world return
 - [x] 在 Linux `secondary_startup` 最早汇编路径加入 UART 路标；实机 `ABCDE` 证明 CPU1 已进入 `secondary_start_kernel()`
 - [x] 在 Linux `secondary_start_kernel()` C 初始化路径加入 `F`–`N` UART 路标；实机完整输出至 `N`，CPU1 已 online 并完成唤醒 CPU0
@@ -77,19 +77,48 @@
 - [x] 在 SPL→TEE 前精确清理遗留 USB OTG INTID 55/APR0；实机 CPU0 RPR 恢复 `0xff`、PPI 30 不再积压，并跨过依赖 CPU1→CPU0 SGI 的 devtmpfs completion
 - [x] 实机运行 secure SPL GICC_RPR/APR/ISACTIVER 只读探针；确认进入 TEE 前已存在 RPR=`0`、APR0=`1`、仅 INTID 55 active，且 cache cleanup 不改变状态
 - [ ] 对照旧厂商链的同组 GIC 状态，并检查 normal world 不可见的 secure banked Group/IRQ 路由
-- [x] 验证清理 INTID 55/APR0 后 CPU1→CPU0 reschedule/调用 IPI 与 completion 恢复，clean v8 双核 Linux 继续进入 shell并由用户确认超过 30 秒
+- [x] 验证清理 INTID 55/APR0 后 CPU1→CPU0 reschedule/调用 IPI 与 completion 恢复，clean v8 双核 Linux 继续进入 shell并由用户确认 uptime 约 700 秒
+- [x] 从同一 clean Linux 5.10.262 源码构建四核单变量 A/B；最终配置相对双核仅删除 `maxcpus=2` 并加入可辨识版本后缀
+- [x] 修正一键启动器默认 loader：由旧 RX-fast 改为已验证的 INTID55/APR0 cleanup loader，并保留 SHA-256 强校验
+- [x] RAM-only 实机验证 clean 四核 Linux 启动并稳定越过原约 30 秒边界；CPU0–CPU3 online，uptime 已到 72.92 秒且四核 IPI 均有增长
+- [x] 从 `allnoconfig` 白名单构建 5.10 四核救援内核；主机侧确认 CAN/NFS/NTFS/PCI/MTD/图形/声音等未启用，zImage 由 10,158,592 B 降至 2,328,112 B
+- [x] RAM-only 上板审计 v10；确认 `PROC_FS` 已编入但缺 `BINFMT_SCRIPT` 导致 `/init` `ENOEXEC`、虚拟文件系统未挂载，同时缺 `ARM_PSCI` 只启动 CPU0，因此 v10 判为无效基线
+- [x] 构建补回 PSCI、脚本执行、time32/POSIX timers、futex/epoll 等基础 ABI 与诊断接口的救援 v11；仍保持 CAN/NFS/NTFS/PCI/MTD/图形/声音关闭
+- [x] 将 R1 v9/v10/v11 实例整理为 Linux 内核裁剪方法论、实操流程和面试八股文档
+- [x] 将 BootROM/471/SPL/OP-TEE/U-Boot proper、GICv2 基础、INTID55 定位过程和面试问答整理为专题文档
+- [ ] RAM-only 实机验证 `5.10.262-phicomm-r1-rescue-v11` 四核、`/init`、proc/sys/devtmpfs、controlling TTY 和 uptime 超过 30 秒
+- [x] 建立冻结 rescue 核心、叠加单个 peripheral fragment 和带 tag 产物的构建方式；生成首个 eMMC-only A/B 候选
+- [x] 用 `-rescue-v11-emmc-a1` zImage + 最小 DT 完成 A 线；用户确认四核、虚拟文件系统、shell 和 uptime >30 秒均正常
+- [x] eMMC B1 只读枚举成功：RK805、HS200、8GME4R、user/boot0/boot1/RPMB 均出现；但完整 DT 使 CPU1-CPU3 启动失败，不能作为最终基线
+- [x] 保持 B1 zImage/initramfs/eMMC DT 不变完成 B2 arch-timer A/B；eMMC 与新 initramfs 正常，但 CPU1–CPU3 仍超时，timer 单变量假说被否定
+- [x] 修复救援 initramfs 缺少 `echo/printf/test/[` applet 链接，并将 kernel/initramfs/B2 DTB 合成单文件 Linux FIT
+- [x] 确认普通 SPL+FIT 拼接已经被 RK322x 0x472 有效窗口实机否定；构建保留 INTID55 cleanup 的直接 UART2 RX 无节流候选
+- [ ] 实机用 direct-RX loader + `--tx-gap-us 0` 验证 FIT 传输速度和可靠性，再决定是否替换默认 loader
+- [x] 构建并离线审计 U-Boot proper USB DFU RAM-only 候选；明确关闭 DFU/MMC、Fastboot、RockUSB 与 mass-storage 写入路径
+- [x] 通过单文件 RAM 启动路径运行 B2；用户确认 USB 下载已足够快，Linux 日志确认修正 initramfs 与 eMMC 生效（传输计时未留档）
+- [x] 实机运行 C1：复用 multi_v7 clean v9 zImage且保持 B2 DT/initramfs；CPU0–CPU3 与 eMMC 同时通过（本轮文本只保存 uptime 13.56 秒，未保存 IPI）
+- [x] 实机运行 C2：失败 v11 配置只补 Cortex-A7 `ARM_ERRATA_814220`；三个次核仍超时，实机否定该单变量，eMMC 继续正常
+- [ ] （延后到最小化阶段）实机运行 B3：保持失败 B2 kernel/initramfs/完整 eMMC DT，只删除 CRU `assigned-clocks/rates`
+- [ ] 以已验证 multi_v7 C1（四核 + 完整 eMMC DT）作为工作基线，继续逐项启用和验证板载外设
 - [x] 在不覆盖 eMMC idb/U-Boot/trust 的前提下验证现代 U-Boot + 开源 OP-TEE + 双核 Linux RAM-only 启动链
 - [x] 定位并修复当前 RAM-only 主线 SMP 启动冻结：MaskROM/RockUSB 遗留 USB OTG INTID 55/APR0 阻塞 CPU0 IRQ
 - [x] 验证现代 U-Boot 的 eMMC 只读访问及 Rockchip `FwPartOffset=0x2000` 地址差异
 - [x] 从纯 RAM 现代 U-Boot 启动单核主线 Linux 并进入救援 shell
-- [ ] 验证 USB Host / Device
+- [ ] （降级/仅研究）USB Host / Device：R1 智能音箱没有对外 USB 外设接口；保留已构建候选用于 SoC/DFU 研究，不作为板载外设 bring-up 主线
+- [ ] （后续）恢复 RK322x DDR DVFS：当前 `rk322x_ddr_300MHz_v1.06.bin` 只负责上电训练并以 300 MHz 初始化 DDR；需先确认 Rockchip TEE 的 DDR SMC ABI、RK322x DMC/devfreq 驱动以及板级 DDR timing/频点表，再做 RAM-only A/B，不能把更换 TEE 当作已经启用动态调频
 - [ ] 连续冷启动测试
 
 ## P2：网络
 
-- [ ] brcmfmac 枚举成功
+- [x] Wi-Fi A1：`0x30010000` SDIO + GPIO2_D2 WL_REG_ON 实机通过；`mmc1` 枚举三个 Broadcom function（vendor `0x02d0`、device `0xa9bf`），四核保持 online
+- [x] Wi-Fi A2：主线 brcmfmac 识别 BCM4345/6、启动 7.45.100.6 固件并创建 SDIO `wlan0`；四核长期运行及四核 IPI 活动复核通过
+- [x] Wi-Fi A3：补齐可信 `regulatory.db`、国家码与 BCM43455 CLM blob；nl80211 实机扫描成功
+  - [x] A3a 主机端：打包 Fedora `wireless-regdb 2026.05.30`、`linux-firmware 20260622` BCM43455 CLM，并设置初始监管域 `CN`
+  - [x] A3a 实机：确认 regulatory/CLM 错误消失、`wlan0` 存在且四核 IPI 活动不回退
+  - [x] A3b：BSSID-redacting nl80211 工具实机扫描到 2.4/5 GHz 共 9 个 BSS，退出码 0；后续构建已修正 executable-stack 标志
 - [ ] 确认 NVRAM 文件名规则
-- [ ] 2.4 GHz 扫描
+- [x] 2.4 GHz 扫描
+- [x] 5 GHz 扫描
 - [ ] WPA2/WPA3 连接
 - [ ] 配置文件自动联网
 - [ ] 断线自动重连
@@ -100,8 +129,13 @@
 - [x] 找到蓝牙 UART
 - [x] 找到 BT_REG_ON
 - [x] 确认 RTS/CTS
-- [ ] 提取正确的 `.hcd`
-- [ ] 创建 `hci0`
+- [x] Bluetooth UART A1r3：实机确认 UART1-1 pinmux、BT_REG_ON/BT_WAKE 高电平，HCI Reset 后 `tx:4 rx:0`
+- [ ] Bluetooth UART A1r4：内建 RK805 clock provider 并以 always-on consumer 开启 CLK32KOUT2，验证 controller 低速时钟假说
+- [x] Bluetooth UART A1r5：LPO=32768 Hz、BT_WAKE=low、BT_REG_ON=high 均实机成立，但 HCI 仍为 `tx:4 rx:0`
+- [x] Bluetooth UART A1r6：`hci0` 创建，识别 BCM4345C0，UART 双向/RTS/CTS/LPO/GPIO 均通过；固件请求名为 `BCM4345C0.hcd`
+- [x] Bluetooth UART A1r7：原厂 HCD 以 `BCM4345C0.hcd` 命中并完成 Patch，firmware build `0000` → `0124`
+- [x] 提取正确的 `.hcd`
+- [x] 创建 `hci0`
 - [ ] BlueZ 配对
 - [ ] PipeWire A2DP Sink
 - [ ] SBC 播放

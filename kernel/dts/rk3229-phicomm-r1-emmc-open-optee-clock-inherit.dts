@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+
+/*
+ * B3 after B2 proved that the minimal architected-timer contract alone does
+ * not restore secondary CPUs.
+ *
+ * Keep the B2 timer and complete eMMC/RK805 description.  Change one early
+ * boot contract: register the RK322x CRU provider, but inherit the clock tree
+ * established by the vendor DDR stage instead of applying the upstream bulk
+ * PLL/ARMCLK/CPU/PERI assigned-clock rates before secondary CPU bring-up.
+ */
+
+#include "rk3229-phicomm-r1-emmc-open-optee-timer-minimal.dts"
+
+&cru {
+	/delete-property/ assigned-clocks;
+	/delete-property/ assigned-clock-rates;
+};

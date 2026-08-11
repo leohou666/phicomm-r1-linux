@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+
+/*
+ * Bluetooth UART A1r5.
+ *
+ * AW-CM256SM/CYW43455 startup requires LPO stable and BT_DEV_WAKE low before
+ * BT_REG_ON rises.  Express that ordering as a regulator dependency chain:
+ * RK805 CLK32KOUT2 -> BT_DEV_WAKE(low) -> BT_REG_ON(high).
+ */
+
+#include "rk3229-phicomm-r1-emmc-open-optee-wifi-bt-uart-a1r4.dts"
+
+&bt_device_wake {
+	gpio = <&gpio3 RK_PD3 GPIO_ACTIVE_LOW>;
+	/delete-property/ enable-active-high;
+	vin-supply = <&bt_lpo_clock_enable>;
+};
+
+&bt_reg_on {
+	/delete-property/ regulator-boot-on;
+	vin-supply = <&bt_device_wake>;
+};

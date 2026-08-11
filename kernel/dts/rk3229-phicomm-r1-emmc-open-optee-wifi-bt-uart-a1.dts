@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+
+/*
+ * Bluetooth UART A1 on top of the verified Wi-Fi A3 hardware DT.
+ *
+ * The vendor DT proves that the soldered combo module uses UART1's alternate
+ * GPIO3 pin group, not rk322x.dtsi's default GPIO1 group.  This stage powers
+ * the controller and exposes /dev/ttyS1 for a raw 115200-baud HCI Reset.  It
+ * deliberately has no Bluetooth serdev child and downloads no HCD firmware.
+ */
+
+#include "rk3229-phicomm-r1-emmc-open-optee-wifi-sdio-a1.dts"
+
+&gpio2 {
+	bt_reg_on_hog: bt-reg-on-hog {
+		gpio-hog;
+		gpios = <RK_PD5 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "bt-reg-on";
+	};
+};
+
+&pinctrl {
+	uart1-alt {
+		uart1_alt_xfer: uart1-alt-xfer {
+			rockchip,pins = <3 RK_PB6 1 &pcfg_pull_up>,
+					<3 RK_PB5 1 &pcfg_pull_none>;
+		};
+
+		uart1_alt_cts: uart1-alt-cts {
+			rockchip,pins = <3 RK_PA7 1 &pcfg_pull_none>;
+		};
+
+		uart1_alt_rts: uart1-alt-rts {
+			rockchip,pins = <3 RK_PA6 1 &pcfg_pull_none>;
+		};
+	};
+};
+
+&uart1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart1_alt_xfer &uart1_alt_cts &uart1_alt_rts>;
+	uart-has-rtscts;
+	status = "okay";
+};

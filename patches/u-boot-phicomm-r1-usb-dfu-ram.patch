@@ -1,0 +1,50 @@
+diff --git a/configs/phicomm-r1_defconfig b/configs/phicomm-r1_defconfig
+index 402ce580057..b94d7c31261 100644
+--- a/configs/phicomm-r1_defconfig
++++ b/configs/phicomm-r1_defconfig
+@@ -35,6 +35,7 @@ CONFIG_SPL_NO_BSS_LIMIT=y
+ # CONFIG_SPL_OPTEE_IMAGE is not set
+ # CONFIG_CMD_SAVEENV is not set
+ CONFIG_CMD_BIND=y
++CONFIG_CMD_DFU=y
+ CONFIG_CMD_MMC=y
+ # CONFIG_CMD_SF is not set
+ # CONFIG_CMD_SETEXPR is not set
+@@ -66,5 +67,15 @@ CONFIG_DEBUG_UART_SKIP_INIT=y
+ CONFIG_SYS_NS16550_MEM32=y
+ CONFIG_SYSRESET=y
++CONFIG_USB=y
++CONFIG_USB_GADGET=y
++# CONFIG_DM_USB_GADGET is not set
++CONFIG_USB_GADGET_DWC2_OTG=y
++CONFIG_USB_GADGET_DOWNLOAD=y
++# CONFIG_USB_FUNCTION_FASTBOOT is not set
++# CONFIG_USB_FUNCTION_MASS_STORAGE is not set
++# CONFIG_USB_FUNCTION_ROCKUSB is not set
++CONFIG_DFU_RAM=y
++# CONFIG_DFU_MMC is not set
+ # CONFIG_FAT_WRITE is not set
+ CONFIG_RANDOM_UUID=y
+ CONFIG_TPL_TINY_MEMSET=y
+diff --git a/dts/upstream/src/arm/rockchip/rk3229-phicomm-r1.dts b/dts/upstream/src/arm/rockchip/rk3229-phicomm-r1.dts
+index 05d37b2c859..a6dc5031960 100644
+--- a/dts/upstream/src/arm/rockchip/rk3229-phicomm-r1.dts
++++ b/dts/upstream/src/arm/rockchip/rk3229-phicomm-r1.dts
+@@ -37,3 +37,17 @@
+ 	pinctrl-0 = <&uart21_xfer>;
+ 	status = "okay";
+ };
++
++/* RAM-only DFU transport on the same OTG port used by MaskROM. */
++&u2phy0 {
++	status = "okay";
++};
++
++&u2phy0_otg {
++	status = "okay";
++};
++
++&usb_otg {
++	dr_mode = "peripheral";
++	status = "okay";
++};

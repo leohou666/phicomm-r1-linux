@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+
+/*
+ * Wi-Fi SDIO A1 on top of the verified C1 four-core/eMMC device tree.
+ *
+ * This stage only powers and enumerates the soldered Broadcom SDIO function.
+ * It deliberately does not add brcmfmac firmware or a Wi-Fi child node yet.
+ * Original R1 evidence maps SDIO to 0x30010000 and WL_REG_ON to GPIO2_D2
+ * (legacy global GPIO 90), active high.
+ */
+
+#include "rk3229-phicomm-r1-emmc-open-optee-timer-minimal.dts"
+
+/ {
+	wifi_pwrseq: wifi-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		reset-gpios = <&gpio2 RK_PD2 GPIO_ACTIVE_LOW>;
+		post-power-on-delay-ms = <200>;
+	};
+};
+
+&sdio {
+	bus-width = <4>;
+	cap-sdio-irq;
+	keep-power-in-suspend;
+	max-frequency = <37500000>;
+	mmc-pwrseq = <&wifi_pwrseq>;
+	non-removable;
+	status = "okay";
+};

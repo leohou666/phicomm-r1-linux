@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+
+/*
+ * First peripheral A/B after the minimal four-core open OP-TEE baseline.
+ *
+ * Reuse the previously booted full R1 board description for clocks, pinctrl,
+ * RK805 regulators, UART and eMMC.  Change the firmware contract to standard
+ * PSCI v0.2/1.0 and explicitly keep every USB controller disabled.  The only
+ * intended new functional path relative to the minimal SMP DT is eMMC plus
+ * its clock/pinctrl/regulator prerequisites.
+ */
+
+#include "rk3229-phicomm-r1.dts"
+
+&{/psci} {
+	compatible = "arm,psci-1.0", "arm,psci-0.2";
+	/delete-property/ cpu_suspend;
+	/delete-property/ cpu_off;
+	/delete-property/ cpu_on;
+};
+
+&u2phy0 {
+	status = "disabled";
+};
+
+&u2phy0_otg {
+	status = "disabled";
+};
+
+&usb_otg {
+	status = "disabled";
+};
+

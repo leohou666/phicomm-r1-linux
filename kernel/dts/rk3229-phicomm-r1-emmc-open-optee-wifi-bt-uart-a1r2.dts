@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+
+/*
+ * Bluetooth UART A1r2.
+ *
+ * A1's GPIO hog caused a circular -EPROBE_DEFER while gpio2 was registering.
+ * Use an always-on fixed regulator so BT_REG_ON is requested only after the
+ * gpiochip exists.  UART1 remains raw (no serdev child, no HCD download).
+ */
+
+#include "rk3229-phicomm-r1-emmc-open-optee-wifi-sdio-a1.dts"
+
+/ {
+	bt_reg_on: regulator-bt-reg-on {
+		compatible = "regulator-fixed";
+		regulator-name = "bt_reg_on";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&gpio2 RK_PD5 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+};
+
+&pinctrl {
+	uart1-alt {
+		uart1_alt_xfer: uart1-alt-xfer {
+			rockchip,pins = <3 RK_PB6 1 &pcfg_pull_up>,
+					<3 RK_PB5 1 &pcfg_pull_none>;
+		};
+
+		uart1_alt_cts: uart1-alt-cts {
+			rockchip,pins = <3 RK_PA7 1 &pcfg_pull_none>;
+		};
+
+		uart1_alt_rts: uart1-alt-rts {
+			rockchip,pins = <3 RK_PA6 1 &pcfg_pull_none>;
+		};
+	};
+};
+
+&uart1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart1_alt_xfer &uart1_alt_cts &uart1_alt_rts>;
+	uart-has-rtscts;
+	status = "okay";
+};

@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+
+/*
+ * B2 after the eMMC A1 DT enumerated storage but failed to online CPU1-CPU3.
+ *
+ * Keep the complete A1 eMMC/RK805 description and change exactly one
+ * subsystem contract: make the architected timer node match the proven
+ * minimal four-core DT.  In particular, do not force Linux to use the
+ * secure physical timer PPI when open OP-TEE owns the secure world.
+ */
+
+#include "rk3229-phicomm-r1-emmc-open-optee.dts"
+
+&{/timer} {
+	/delete-property/ arm,cpu-registers-not-fw-configured;
+	interrupts = <1 13 0xf04>,
+		     <1 14 0xf04>;
+};

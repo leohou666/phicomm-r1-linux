@@ -31,5 +31,5 @@ echo "No storage is mounted or modified by this initramfs."
 while true; do
 	echo
 	echo "Starting rescue shell on /dev/console. Type 'exit' to restart it."
-	/bin/sh
+	/bin/setsid /bin/cttyhack /bin/sh
 done

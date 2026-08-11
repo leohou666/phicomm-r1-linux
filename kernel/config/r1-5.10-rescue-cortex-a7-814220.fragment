@@ -1,0 +1,8 @@
+# C2 single-variable A/B after the exact multi_v7 clean-v9 kernel restored
+# all four CPUs with the otherwise unchanged eMMC B2 DT and initramfs.
+#
+# RK3229 uses Cortex-A7. ARM erratum 814220 affects Cortex-A7 r0p2-r0p5 and
+# allows L2 set/way cache maintenance to overtake L1 maintenance.  Keep the
+# trimmed rescue baseline and restore only this applicable CPU workaround.
+CONFIG_LOCALVERSION="-phicomm-r1-rescue-v11-emmc-c2-a7-814220"
+CONFIG_ARM_ERRATA_814220=y

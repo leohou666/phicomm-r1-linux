@@ -1,0 +1,52 @@
+/dts-v1/;
+
+/ {
+	description = "Phicomm R1 Linux 5.10 rescue v11 eMMC B3 clock-inherit";
+	#address-cells = <1>;
+
+	images {
+		kernel {
+			description = "Linux 5.10.262 rescue v11 eMMC";
+			data = /incbin/("../build/artifacts/zImage-rescue-v11-emmc-a1");
+			type = "kernel";
+			arch = "arm";
+			os = "linux";
+			compression = "none";
+			load = <0x62000000>;
+			entry = <0x62000000>;
+			hash-1 { algo = "sha256"; };
+		};
+
+		ramdisk {
+			description = "R1 rescue initramfs with basic applets";
+			data = /incbin/("../build/artifacts/r1-initramfs-rescue-v11-emmc-a2.cpio.gz");
+			type = "ramdisk";
+			arch = "arm";
+			os = "linux";
+			compression = "none";
+			load = <0x64000000>;
+			hash-1 { algo = "sha256"; };
+		};
+
+		fdt {
+			description = "R1 eMMC B3 timer-minimal and inherited clocks";
+			data = /incbin/("../build/artifacts/rk3229-phicomm-r1-rescue-v11-emmc-b3-clock-inherit.dtb");
+			type = "flat_dt";
+			arch = "arm";
+			compression = "none";
+			load = <0x65000000>;
+			hash-1 { algo = "sha256"; };
+		};
+	};
+
+	configurations {
+		default = "config-1";
+
+		config-1 {
+			description = "R1 rescue v11 eMMC B3 clock-inherit";
+			kernel = "kernel";
+			ramdisk = "ramdisk";
+			fdt = "fdt";
+		};
+	};
+};

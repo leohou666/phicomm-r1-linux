@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+
+/*
+ * AW-CM256SM/CYW43455 Bluetooth serdev A1r6.
+ *
+ * Wi-Fi keeps the already verified WL_REG_ON pwrseq and 200 ms POR delay.
+ * The standard Broadcom HCI UART driver owns the Bluetooth LPO, shutdown,
+ * device-wakeup and host-wakeup resources and performs the runtime sequence.
+ */
+
+#include "rk3229-phicomm-r1-emmc-open-optee-wifi-sdio-a1.dts"
+
+&rk805 {
+	#clock-cells = <1>;
+};
+
+&pinctrl {
+	uart1-alt {
+		uart1_alt_xfer: uart1-alt-xfer {
+			rockchip,pins = <3 RK_PB6 1 &pcfg_pull_up>,
+					<3 RK_PB5 1 &pcfg_pull_none>;
+		};
+
+		uart1_alt_cts: uart1-alt-cts {
+			rockchip,pins = <3 RK_PA7 1 &pcfg_pull_none>;
+		};
+
+		uart1_alt_rts: uart1-alt-rts {
+			rockchip,pins = <3 RK_PA6 1 &pcfg_pull_none>;
+		};
+	};
+};
+
+&uart1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart1_alt_xfer &uart1_alt_cts &uart1_alt_rts>;
+	uart-has-rtscts;
+	status = "okay";
+
+	bluetooth {
+		compatible = "brcm,bcm4345c5";
+		max-speed = <1500000>;
+		shutdown-gpios = <&gpio2 RK_PD5 GPIO_ACTIVE_HIGH>;
+		device-wakeup-gpios = <&gpio3 RK_PD3 GPIO_ACTIVE_HIGH>;
+		host-wakeup-gpios = <&gpio3 RK_PD2 GPIO_ACTIVE_HIGH>;
+		interrupt-parent = <&gpio3>;
+		interrupts = <RK_PD2 IRQ_TYPE_EDGE_RISING>;
+		interrupt-names = "host-wakeup";
+		clocks = <&rk805 1>;
+		clock-names = "lpo";
+		vbat-supply = <&vcc_33>;
+		vddio-supply = <&vcc_33>;
+	};
+};

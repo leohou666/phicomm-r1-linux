@@ -27,8 +27,8 @@
 | SoC | Rockchip RK3229 | Linux、网络协议栈、蓝牙解码、PipeWire DSP |
 | 内存 | 约 512 MiB DDR | 系统运行内存 |
 | 存储 | 约 8 GiB eMMC | Bootloader、内核、rootfs、配置 |
-| Wi-Fi / 蓝牙 | Broadcom/Cypress CYW43455 | Wi-Fi 通过 SDIO，蓝牙通过 UART HCI |
-| 音频 DSP | AKM AK7755 | 音频路由、滤波、分频、AEC 等硬件 DSP 功能 |
+| Wi-Fi / 蓝牙 | 海华无线模块 AW-CM256SM 支持WiFi和蓝牙（Broadcom/Cypress CYW43455） | Wi-Fi 通过 SDIO，蓝牙通过 UART HCI |
+| 音频 DSP | AKM AK7755EN | 音频路由、滤波、分频、AEC 等硬件 DSP 功能 |
 | ADC | ES7243 系列 | 麦克风输入 |
 | 功放 | TPA3118 系列 | 驱动扬声器 |
 

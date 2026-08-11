@@ -1,0 +1,16 @@
+# Clean four-core A/B after the pre-TEE GIC INTID 55/APR0 cleanup.
+# Keep every diagnostic boot parameter from the verified two-core v8 image;
+# the only functional change is removing maxcpus=2.  Use a distinct local
+# version so the serial log proves which kernel actually ran.
+CONFIG_LOCALVERSION="-phicomm-r1-4core"
+CONFIG_CMDLINE="earlyprintk console=ttyS2,1500000n8 loglevel=8 ignore_loglevel cpufreq.off=1 nohz=off clocksource.arm_arch_timer.evtstrm=0 rdinit=/init"
+
+# Linux 5.10's multi_v7_defconfig selects an optional GCC plugin whose host
+# headers are unavailable here.  Retain the normal strong stack protector.
+# CONFIG_GCC_PLUGINS is not set
+# CONFIG_STACKPROTECTOR_PER_TASK is not set
+
+# The minimal diagnostic DT has no Wi-Fi node, so avoid the unused signed-regdb
+# certificate toolchain in this isolated bring-up image.
+# CONFIG_CFG80211 is not set
+# CONFIG_SYSTEM_TRUSTED_KEYRING is not set

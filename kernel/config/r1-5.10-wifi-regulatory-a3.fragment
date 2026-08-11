@@ -1,0 +1,3 @@
+CONFIG_LOCALVERSION="-phicomm-r1-4core-wifi-a3"
+# CONFIG_LOCALVERSION_AUTO is not set
+CONFIG_CMDLINE="earlyprintk console=ttyS2,1500000n8 loglevel=8 ignore_loglevel cpufreq.off=1 nohz=off clocksource.arm_arch_timer.evtstrm=0 rdinit=/init cfg80211.ieee80211_regdom=CN"

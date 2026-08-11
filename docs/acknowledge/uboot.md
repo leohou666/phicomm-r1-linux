@@ -2,6 +2,10 @@
 
 本文档从 ARM/Linux 嵌入式工程师的视角，系统介绍 U-Boot 的架构、配置、移植和调试流程。目标是作为面试准备材料以及 R1 项目 U-Boot bring-up 工作的方法论基础。
 
+R1 当前 BootROM/471/SPL/OP-TEE/U-Boot proper 的准确边界、GICv2 基础，以及如何从
+“CPU1 已 online 但系统仍挂死”定位到 secure INTID 55 遗留，另见
+[ARMv7 启动链、OP-TEE 与 GICv2 调试](arm-boot-gicv2.md)。
+
 > 文中以 R1 实机（RK3229 / ARM Cortex-A7 / eMMC / 512 MiB DRAM）为参考平台，但原理适用于所有 Rockchip 和主流 ARM SoC。
 
 ---
@@ -1018,3 +1022,28 @@ SHA/CRC）。**所有核对手续必须在主机侧完成**，实机只验证行
 移植 = 承题（地基）→ 起讲（阶段模型）→ 入题（决策表）→ 起股（最小配置）→
 中股（板级文件）→ 后股（离线验证）→ 束股（实机诊断），每轮循环只改一个变量。
 八股填完，板子不亮也只差一个"待定位的停止点"；用路标二分，每轮减半。
+
+## DFU RAM：把 USB 只当高速内存下载通道
+
+U-Boot 的 DFU 命令本身只是协议前端，真正决定数据去向的是 `dfu_alt_info` 选择的后端。
+`DFU_RAM` 把 alternate 限定为一段物理内存；`DFU_MMC`、mass storage、RockUSB 和 Fastboot
+则可能暴露块设备或写入命令。因此“启用 USB”不等于“安全”，必须同时审计最终 `.config`
+和运行时 alternate。
+
+【R1】当前候选只开放：
+
+```text
+setenv dfu_alt_info 'linux-fit ram 6a800000 01000000'
+dfu 0 ram 0
+```
+
+主机下载 FIT 后执行 `dfu-util -e`，U-Boot 的 DFU gadget 收到 detach，退出轮询并继续后续
+命令。于是可以把目标端写成单行事务：
+
+```text
+setenv dfu_alt_info 'linux-fit ram 6a800000 01000000' && dfu 0 ram 0 && iminfo 6a800000 && bootm 6a800000
+```
+
+`iminfo`/`bootm` 会验证 FIT 及其 SHA-256 子镜像；`&&` 保证任一步失败都不继续跳转。这个设计
+只能加速已经进入 U-Boot proper 之后的 Linux 载荷，不能替代到达 OP-TEE/U-Boot 所需的前级
+SPL YMODEM FIT。当前 R1 USB DFU 仍是待实机候选，而非已验证能力。

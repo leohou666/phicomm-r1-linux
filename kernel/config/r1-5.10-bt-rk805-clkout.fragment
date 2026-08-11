@@ -1,0 +1,9 @@
+# Bluetooth A1r4: the RK805 32.768 kHz clock provider must be available
+# before the built-in fixed-clock regulator requests CLK32KOUT2.
+CONFIG_COMMON_CLK_RK808=y
+
+# Preserve the already-verified Wi-Fi A3 toolchain configuration.  A fresh
+# multi_v7 defconfig may auto-enable GCC plugins when plugin headers are
+# detected, while the frozen A3 config has them disabled.
+# CONFIG_GCC_PLUGINS is not set
+# CONFIG_SYSTEM_TRUSTED_KEYRING is not set

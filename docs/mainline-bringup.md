@@ -463,6 +463,9 @@ FIT 中 OP-TEE 的 load/entry 均为 `0x68400000`。471/472/loader 解包后有�
 
 ### MaskROM/RockUSB 遗留 GIC active interrupt
 
+本节记录项目结论；GICv2、PSCI、SPL/OP-TEE/U-Boot proper 原理、逐步排查方法和面试问答见
+[ARMv7 启动链、OP-TEE 与 GICv2 调试](acknowledge/arm-boot-gicv2.md)。
+
 Linux 5.10 v7 实机显示 CPU0 的 GICC_RPR 从 GIC 初始化前直到等待 kthread completion 前始终为
 `0x00`，而 CPU1 为正常 idle 值 `0xff`。随后在仍处于 secure state、尚未进入 OP-TEE 的 SPL
 中读取 GIC，cache cleanup 前后的结果完全一致：GICC_APR0=`1`，所有 GICD_ISACTIVERn 中仅
@@ -488,6 +491,360 @@ initramfs 和 kernel command line，不包含上述诊断代码；下一实机�
 clean v8 实机通过。启动日志确认镜像为无 `-dirty` 后缀的
 `Linux 5.10.262-phicomm-r1 #1`；PSCI v1.0 启动 CPU1 后打印 `Brought up 1 node, 2 CPUs`，
 正常越过 `No ATAGs?`，于 2.078 秒运行 `/init` 并进入 BusyBox shell。用户随后确认 uptime
-超过 30 秒。保存的首 shell 日志只包含 `8.99 15.92`，因为 `/bin/sh` 找不到 `sleep` 链接；
-因此日志直接验证双核 shell 与 8.99 秒，>30 秒作为用户实机确认单独记录。后续保存长期日志
+约 700 秒。保存的首 shell 日志只包含 `8.99 15.92`，因为 `/bin/sh` 找不到 `sleep` 链接；
+因此日志直接验证双核 shell 与 8.99 秒，约 700 秒作为用户实机确认单独记录。后续保存长期日志
 应使用 `/bin/busybox sleep 5`，而不是未安装链接的 `sleep`。
+
+双核随后由用户确认继续稳定运行到约 700 秒。下一单变量候选从同一 clean Linux 5.10.262
+源码重建，只从 `CONFIG_CMDLINE_FORCE` 的命令行删除 `maxcpus=2`，并以
+`-phicomm-r1-4core` 后缀防止拿错镜像。最终配置与双核 v8 逐行比较只有版本后缀和该命令行
+两处差异；DTB 逐字节相同。四核 v9 zImage 为 10,158,592 B，SHA-256
+`5bc8624169e60ef4558cc78cb80ae887a2a4f798c2a824a9afecece29d3c2565`，CRC32
+`14f97549`，待 RAM-only 实机验证。
+
+修正一键脚本默认 loader 为 INTID55 cleanup 版本后，四核 v9 实机通过。用户串口输出确认
+`/sys/devices/system/cpu/online` 与 `present` 都是 `0-3`，uptime 到 72.92 秒；CPU0–CPU3 的
+reschedule IPI 分别为 15/8/24/21，function-call IPI 为 60/83/47/40，证明四核不仅列入位图，
+还在实际处理跨核中断。该结果已越过旧约 30 秒冻结边界。
+
+当前 initramfs 默认 BusyBox 不是新编译的通用 Linux 用户空间，而是原厂 recovery 中的静态
+ARM BusyBox 1.22.1。二进制内部明确包含 bionic libc 源路径、`ANDROID_DATA`、
+`ANDROID_ROOT` 和 Android `tzdata` 查找逻辑。因此 `/bin/busybox uptime` 调用本地时区转换时
+会打印 Android 环境变量警告；这只说明该单个静态工具的 libc 来源，不表示主线内核、DT、
+OP-TEE 或项目 `/init` 来自 Android。`cat /proc/uptime` 不经过该时区逻辑。
+
+### 白名单式四核救援内核 v10
+
+`multi_v7_defconfig` 是多平台发行版基线，会同时启用 R1 不需要的 CAN、网络文件系统、PCI、
+MTD、图形、声音及大量其他 SoC 驱动。为避免靠不断追加禁用项裁剪，构建脚本新增
+`KERNEL_DEFCONFIG`，v10 从 `allnoconfig` 合并
+`kernel/config/r1-5.10-rescue-minimal.fragment`。白名单保留 RK322x、四核 SMP/PSCI、GIC、
+arch timer、UART2、gzip initramfs、eMMC、ext4、USB、IPv4/IPv6 与 ramoops；Wi-Fi、蓝牙和
+AK7755 音频留待对应 DT/驱动阶段再逐项加入。
+
+主机侧最终 `.config` 审计确认 CAN、NFS/NFSD、NTFS、CIFS/9P、PCI、MTD、UBIFS、SquashFS、
+DRM/fb、声音、媒体、无线、模块及额外 initrd 解压器均未启用。启用的 `y/m` 项由 v9 的 3285
+降至 447，zImage 从 10,158,592 B 降至 2,328,112 B，vmlinux 从 31,969,824 B 降至
+5,367,112 B。候选版本为 `5.10.262-phicomm-r1-minimal`，SHA-256 为
+`e17c84d45130124a2c453be8f5b2bd7f46238bf0dd9744106c27cf1979e95333`。这仍只是主机侧验证；
+必须经 RAM-only 上板确认四核、shell 和 uptime 后，才能替代 v9 基线。当前最小 GIC A/B DT
+没有 eMMC/USB 控制器节点，因此本轮不能声称二者已 probe；ramoops 节点存在，v10 日志已确认
+其以 `0x7bf00000`、1 MiB 成功注册。
+
+v10 实机日志否定了这版配置。`PROC_FS`、`SYSFS` 和 devtmpfs 实际均已编入，但内核输出
+`Failed to execute /init (error -8)` 后回退到 `/bin/sh`；原因是 `allnoconfig` 关闭了
+`BINFMT_SCRIPT`，带 `#!/bin/busybox sh` 的 init 脚本不能执行，所以挂载命令从未运行，
+`/proc` 的缺失并不是 procfs 驱动被删除。相同日志还显示 `Brought up 1 node, 1 CPU`，最终
+配置确认遗漏 `ARM_PSCI`/`ARM_PSCI_FW`，因此 v10 不能用于四核稳定性判断。
+
+v11 在保持外设黑名单的同时，补回 `BINFMT_SCRIPT`、ARM PSCI/hotplug、POSIX timers、旧
+32-bit time ABI、multiuser、futex、epoll/signalfd/timerfd/eventfd、AIO、membarrier/rseq、
+inotify、SysV IPC、RTC、kallsyms、内核配置导出、printk 时间戳和 Magic SysRq。新版 initramfs
+补齐常用 BusyBox applet 链接，并用 `setsid cttyhack` 获取 controlling TTY。最终仍无
+CAN/NFS/NTFS/PCI/MTD/图形/声音/无线，启用项为 508；zImage 为 2,721,856 B，仅比 v10 增加
+393,744 B。其版本后缀明确为 `5.10.262-phicomm-r1-rescue-v11`，尚待上板。
+
+### 冻结救援核心后的首个 eMMC 外设候选
+
+为避免维护一份不断膨胀且无法归因的 `.config`，`scripts/build-kernel.sh` 现在支持按顺序合并
+`KERNEL_EXTRA_FRAGMENTS`，并用 `KERNEL_ARTIFACT_TAG` 为 zImage、DTB、最终配置和预处理 DTS
+生成一组不可混淆的产物。旧的单个 `KERNEL_EXTRA_FRAGMENT` 接口仍保留。
+
+首个外设层为 `kernel/config/r1-5.10-peripheral-emmc.fragment`。v11 白名单已经包含 eMMC、
+RK805 regulator 和 I2C 等选项，所以相对 v11 的最终 `diffconfig` 只有可辨识版本后缀变化；
+该 fragment 目前主要表达长期配置所有权。设备树候选
+`kernel/dts/rk3229-phicomm-r1-emmc-open-optee.dts` 复用既有 R1 时钟、pinctrl、RK805 和 eMMC
+描述，把 PSCI 合同改为标准 v1.0/v0.2，并显式禁用 USB PHY 与 OTG。静态反编译检查确认 eMMC
+为 `okay`、8-bit，总线 USB 节点为 `disabled`。
+
+固定的主机侧候选如下，尚未实机验证：
+
+```text
+5013b84d149e431f0c2886be8b4d0f8e0aea2e96acdd0de08b058332cb23861b  build/artifacts/zImage-rescue-v11-emmc-a1
+7d343820991e8bc7592114c303e7a663b719e5c1015417bd1e044038d30635bc  build/artifacts/rk3229-phicomm-r1-rescue-v11-emmc-a1.dtb
+ad7619355dc60a49abca7bd82a417df99cac758ddf311b2d364483f290b8059e  build/artifacts/kernel-rescue-v11-emmc-a1.config
+```
+
+实机必须先用同一 `zImage-rescue-v11-emmc-a1` 搭配最小 v11 DT 做 A 线，再只换成 eMMC DT 做
+B 线。两线都使用同一个 v11 initramfs，且 B 线只读检查 `mmcblk0`、boot0/boot1、CPU online、
+IPI 与 uptime，不挂载或写入 eMMC。这样能把内核退化和 eMMC DT/probe 问题分开。
+
+A 线随后实机通过。用户逐项确认 `uname`、CPU online/present、`/proc/mounts`、两次
+`/proc/uptime`（间隔 35 秒）与 `/proc/interrupts` 均无问题，uptime 超过 30 秒。该结论属于
+用户实机报告，本轮尚未保存完整串口日志。它证明带新版本标识的 zImage 在已验证最小 DT 下没有
+退化；尚不能证明 eMMC 驱动或完整板级 DT 正确。下一轮保持 zImage/initramfs 逐字节不变，只换
+eMMC DT 做 B 线。
+
+B1 的 eMMC 数据通路通过，但 SMP 回归。用户日志确认 RK805 `0x8050`、DesignWare MMC、HS200
+Samsung `8GME4R` 7.28 GiB、4 MiB boot0/boot1 和 512 KiB RPMB 均成功枚举，uptime 到
+31.74 秒；同时 CPU online 只有 `0`，内核依次报告 CPU1、CPU2、CPU3 超时未 online。三个超时
+发生在 1.04/2.08/3.12 秒，RK805/eMMC 到 3.31 秒后才 probe，因此不能把次核失败归因于已开始
+工作的 MMC 驱动。
+
+静态比较显示 B1 的完整 `rk322x.dtsi` timer 节点相对已验证最小 DT 多出
+`arm,cpu-registers-not-fw-configured`，并给出 secure/non-secure physical、virtual 与 hyp 四路
+PPI；该属性使 ARM 5.10 arch timer 强制选 secure physical PPI。次核在 `set_cpu_online()` 前的
+`notify_cpu_starting()` 会执行 arch-timer hotplug 回调，因此这是与症状时序相符、但仍待 A/B
+验证的推断。B2 DT 仅删除该属性并把 interrupts 恢复为最小 DT 的两路 PPI；CPU reset/OPP/
+supply 等其他差异暂不改动。
+
+B1 复位前补采的日志进一步确认 PSCI v1.0、标准 v0.2 function ID 与 SMC conduit 均已正确识别，
+不是 binding 回退。`/proc/interrupts` 同时出现 GIC PPI29/PPI30 两个 `arch_timer`：IRQ29 计数
+始终为 0，IRQ30 已有 20,815 次；CPU0 实际由 non-secure physical PPI30 推进，而 DT 属性仍使
+arch-timer 初始化路径把 secure physical PPI29 作为主 PPI。该证据增强 timer 推断，但最终因果
+仍以 B2 是否恢复次核为准。
+
+```text
+4800850ad50e8109ccd763a245128b4b3f08477cff583e77c932e5dc90625c6b  build/artifacts/rk3229-phicomm-r1-rescue-v11-emmc-a2-timer-minimal.dtb
+```
+
+### B2 单文件 FIT 与 USB DFU RAM-only 候选
+
+补交的 B1 完整日志仍使用 `-emmc-a1` DTB，因而不是 B2 结果；它再次显示三个次核在
+RK805/eMMC probe 之前超时。日志中的 `/init: echo: not found` 来自 initramfs 构建脚本未给
+原厂 BusyBox 建立 `/bin/echo` 链接。现已同时补齐 `echo`、`printf`、`test`、`[`、`true`、
+`false` 等基础入口，未替换 BusyBox 二进制：
+
+```text
+31508a74ad5265cf27b8a077f994cf00887f238e2d297d26f7a9198fd8cf3095  build/artifacts/r1-initramfs-rescue-v11-emmc-a2.cpio.gz
+```
+
+`scripts/r1-linux-rescue-v11-emmc-a2.its` 把冻结的 eMMC A1 zImage、上述 initramfs 和 B2
+timer-minimal DTB 封装为一个 FIT。kernel、ramdisk、FDT 分别加载到 `0x62000000`、
+`0x64000000`、`0x65000000`，FIT 本身暂存于不与 OP-TEE 保留区重叠的 `0x6a800000`：
+
+```text
+22555b88192f8fc6c6096003b8b4dde71457134004a66e729d66b48216957c94  build/artifacts/r1-linux-rescue-v11-emmc-a2.itb
+```
+
+三个子镜像均已用 `dumpimage` 解出并与源文件逐字节比较。配套 U-Boot proper 候选只启用
+`CMD_DFU`、`DFU_RAM` 和 DWC2 USB gadget；最终 `.config` 明确关闭 `DFU_MMC`、Fastboot、
+RockUSB 和 USB mass storage。该结果仍仅经过编译、DT 状态、符号和 FIT/loader 离线审计，
+USB 枚举、detach/bootm 及 B2 四核行为必须以实机日志为准。
+
+### B2 结果与 multi_v7 C1
+
+B2 上板后，修正后的 initramfs 与 eMMC 只读枚举均正常，但 CPU1–CPU3 仍在 1.039/2.080/
+3.120 秒附近依次超时，和 B1 的 SMP 结果没有实质差异。由此否定“只恢复最小 arch-timer
+合同即可修复次核”的假说；timer 属性/PPI 差异不能解释全部问题。Linux 段日志保存为
+`build/artifacts/rescue-v11-emmc-b2-usb-20260810.log`。
+
+下一 C1 优先检查内核配置，而不是继续同时修改 DT。它直接复用已在最小 DT 下实机验证四核稳定
+的 multi_v7 clean v9 zImage，保持 B2 DTB 和修正 initramfs 逐字节不变：
+
+```text
+ed8c5b932c3853242e0bb0476cbfa17d0d2f2e70379bbd23f85d2006531a24b5  build/artifacts/r1-linux-multiv7-v9-emmc-c1.itb
+```
+
+C1 FIT 为 10,809,808 B，小于 `linux-fit` DFU RAM alternate 的 16 MiB 上限；三个 payload 已从
+FIT 解包并与源文件 `cmp` 一致。若 C1 四核恢复，下一步在 multi_v7 与 v11 最终 config 之间做
+配置二分；若仍失败，则保持已验证 multi_v7 内核不变，继续二分完整板级 DT 的早期 clock、CPU
+与 reset 描述。
+
+C1 实机已经恢复 CPU0–CPU3：四核在 35 ms 内全部 online，`online/present` 均为 `0-3`；同一
+B2 DT 下 RK805、HS200 `8GME4R`、boot0/boot1 与 RPMB 继续正常枚举。这证明完整 eMMC DT 可以
+支持四核，失败边界位于 v11 与 multi_v7 的内核配置差异，而不是 OP-TEE/PSCI/GIC 或 B2 timer
+合同。该次文本仅保存 uptime 13.56 秒，尚未保存 35 秒后的第二次 uptime 和四核 IPI 表。
+
+下一 C2 从失败 v11 配置只恢复 `CONFIG_ARM_ERRATA_814220=y`。该 workaround 是 config 差异中
+唯一由 Linux 5.10 Kconfig 明确标为 Cortex-A7 r0p2–r0p5 适用的早期 cache maintenance erratum；
+其余明显 ARM errata 针对 A8/A9/A15。C2 仍使用 B2 DT/initramfs：
+
+```text
+e69b7839cc2900dd9d8c912189d1e460e706cfbd99654ceea537baad186113f6  build/artifacts/r1-linux-rescue-v11-emmc-c2-a7-814220.itb
+```
+
+最终 config 相对失败 A1 只有该选项和版本后缀不同，FIT payload 已解包逐字节核对。C2 尚未
+实机，814220 只是当前优先假说而不是既定根因。
+
+C2 实机仍只有 CPU0 online，三个次核分别在约 1.039/2.080/3.120 秒超时；FIT hash、Linux
+版本和 B2 DT hash 均正确，故实机否定 `ARM_ERRATA_814220` 单变量。eMMC 与 RK805/RTC 仍
+正常，不受该失败影响。完整日志为
+`build/artifacts/rescue-v11-emmc-c2-a7-814220-failed-20260810.log`。
+
+B2 DT 不含外置 PL310/L2 controller 节点，Cortex-A7 集成 L2 也不采用 PL310 DT 合同，因此
+不继续盲目恢复 multi_v7 的 PL310 errata。下一 B3 改测 SMP 前 CRU 时钟副作用：保持失败 B2
+kernel、initramfs、timer、CPU/eMMC 描述不变，只删除 CRU 的 `assigned-clocks` 与
+`assigned-clock-rates`。排序后的反编译 DT diff 仅有这两项：
+
+```text
+9e2ff4a214c29fcc2a06ba1445528209ba54d4093e5ad6256a8b4abed5b215d6  build/artifacts/r1-linux-rescue-v11-emmc-b3-clock-inherit.itb
+```
+
+选择该变量的依据是：失败 v11 B2/C2 约 12 ms 即进入 SMP，成功 multi_v7 C1 约 24 ms；完整
+DT 会在 `of_clk_init()` 中于 SMP 前批量重设 PLL/ARM/CPU/PERI clocks，成功最小 DT 不会。
+B3 尚未实机，成功后仍需区分错误 clock assignment 与切换后等待时间不足。
+
+当前外设工作基线不等待 B3。按用户决定，直接采用已经实机四核成功的约 10 MiB multi_v7
+clean v9 zImage + B2 完整 eMMC DT，即 C1；USB 下载脚本默认值已恢复为 C1。现有 A/B 已证明
+完整 DTS 不是单独根因：v11+最小 DT 四核、v11+完整 DT 单核，而 multi_v7+同一完整 DT 四核。
+B3 和后续 config/clock 二分留到最小化阶段，不阻塞继续启用外设。
+
+### C1 USB Host A1
+
+首个 C1 外设候选不重编内核：继续使用已验证的 multi_v7 clean v9 zImage 和修正 initramfs，
+只把 B2 DT 扩展为固定 USB Host。原厂 R1 Linux 3.10 日志直接证明三组 EHCI/OHCI 控制器均能
+注册 root hub，且原厂 DT 没有额外 VBUS regulator/GPIO；因此 A1 开启 host0、host1、host2
+及其 PHY port。DWC2 `usb@30040000` 和 `u2phy0_otg` 保持禁用，因为该控制器的 SPI 23 对应
+曾阻塞 CPU0 IRQ 的 INTID 55。
+
+```text
+daa2cebdfe29627b430f9c826cc97a0c71cb5c1e4765d8fd2c0f739d2228094d  build/artifacts/rk3229-phicomm-r1-emmc-open-optee-usb-host-a1.dtb
+3f6533ff47091f878e3c94cceab45df779f5005b84e8b9971eaa52b45fc45e07  build/artifacts/r1-linux-multiv7-v9-emmc-usb-host-a1.itb
+```
+
+最终 DT 的六个 Host controller 均为 `okay`、OTG 为 `disabled`，FIT 提取 DTB 与源文件一致。
+这是主机端候选，尚待实机确认 root hub、外接 USB 设备、四核、eMMC 与 uptime >30 秒同时成立。
+测试必须显式给 `usb-dfu-r1-linux.py --fit`，脚本默认仍保留已验证 C1 作为快速回退。
+
+硬件范围随后由用户纠正：R1 成品智能音箱没有对外 USB 外设接口，也没有 SD 卡槽。因此 USB
+Host A1 不再作为板载外设候选上板，只保留为 RK3229 控制器/DFU 研究产物。外设主线调整为
+SDIO Wi-Fi → UART Bluetooth → I2C/SPI/I2S 音频。Wi-Fi 先做仅 SDIO/power-sequence 的 A1，
+再做 brcmfmac/firmware A2，避免同时改变供电、总线、驱动和固件。
+
+Wi-Fi A1 已生成。原厂证据把 SDIO 定位到 `0x30010000`，WL_REG_ON 定位到 GPIO2_D2；A1
+以 `mmc-pwrseq-simple` 在 200 ms 上电等待后扫描焊接模组，限制 4-bit/37.5 MHz，并保留
+SDIO IRQ。C1 已内建 Rockchip DW-MMC 与 simple pwrseq，因此 kernel/initramfs 不变：
+
+```text
+d1cdfb65d9d05f8cdd7821041b1074802f306a6594c5a26c98d7a8fcc07db667  build/artifacts/rk3229-phicomm-r1-emmc-open-optee-wifi-sdio-a1.dtb
+0139f8f7153caccf27bcc674be70f47c1070352db4c46c92e40ad1ed5d10a0d7  build/artifacts/r1-linux-multiv7-v9-emmc-wifi-sdio-a1.itb
+```
+
+该阶段不含 brcmfmac/firmware，实机只验收 SDIO card/function 枚举；原厂已确认后续实际选择
+`fw_bcm43455c0_ag.bin` 与 `nvram_ap6255.txt`，留给 A2。
+
+A1 已实机通过。`30010000.mmc` 成功分配 mmc-pwrseq，`mmc1` 请求 37.5 MHz、实际运行约
+35.7 MHz，随后报告 `new SDIO card at address 0001`。sysfs 注册三个 function：
+`mmc1:0001:1`、`:2`、`:3`，读出的 vendor/device 为 `0x02d0/0xa9bf`。同时 CPU0–CPU3
+保持 online，eMMC 继续为 `mmc0` HS200。由此 SDIO 控制器、GPIO2_D2 上电、pinctrl 与数据线
+已在 R1 验证；下一 A2 才加入 brcmfmac 和固件，不再改这条已通过的硬件合同。
+
+A2 已从成功 v9 最终配置构建。新增项为 built-in cfg80211、brcmfmac SDIO/BCDC 和 BRCMDBG，
+USB/PCIe backend 关闭；A1 DT 完全复用。initramfs 将原厂
+`fw_bcm43455c0_ag.bin`/`nvram_ap6255.txt` 安装为主线请求的
+`brcm/brcmfmac43455-sdio.bin` 与通用/R1 专用 `.txt` 名称。最终 FIT：
+
+```text
+7fdc5cbbc1816e23ffdefa9fabb6f8addcee5f4fdc2b2cba35dcaa160f86328d  build/artifacts/r1-linux-multiv7-v9-emmc-wifi-brcmfmac-a2.itb
+```
+
+A2 为受控“创建 wlan0”试验，暂不扫描或发射；其 unsigned-regdb 配置不是最终产品策略，后续
+扫描阶段必须加入可信 regulatory.db 与国家码。FIT payload 已逐字节核对，待实机。
+
+A2 实机已创建 `wlan0`。brcmfmac 从 SDIO function 1 读到 BCM4345/6 signature，按预期选择
+`brcm/brcmfmac43455-sdio` 并启动原厂 7.45.100.6 firmware；sysfs netdev 路径明确位于
+`30010000.mmc/mmc1:0001:1`。设备真实 MAC 未写入文档。当前 `regulatory.db` 和 CLM blob
+均缺失，前者报 firmware `-2`，后者提示信道可能受限；A2 仍判定通过，但扫描必须等待 A3
+补齐可信法规数据库、国家码和匹配 CLM 数据。
+
+稳定性回归也已通过：用户确认系统能够长期运行，且 `/proc/interrupts` 中 CPU0–CPU3 均存在，
+四列 IPI2（rescheduling）和 IPI3（function call）都有非零计数。因此四核并非只完成枚举，
+核间调度/函数调用链也在实际工作；A2 没有复现旧的约 30 秒冻结。
+
+A3a 保持 A1 DT 和 A2 无线驱动配置不变，只增加三类运行时数据：Fedora 44
+`wireless-regdb-2026.05.30-1.fc44` 的 `regulatory.db`/`.p7s`、
+`linux-firmware-20260622-1.fc44` 的 `brcmfmac43455-sdio.clm_blob`，以及强制内核命令行参数
+`cfg80211.ieee80211_regdom=CN`。选择 CN 的本机证据是原厂 recovery `default.prop` 的
+`ro.product.locale.region=CN`；它是本轮受控初始监管域，不等同于已经验证设备销售地或射频认证。
+原厂 AP6255 NVRAM 保持不变，未凭空添加 `ccode/regrev`。
+
+最终 A3a FIT 为
+`build/artifacts/r1-linux-multiv7-v9-emmc-wifi-regulatory-a3.itb`，SHA-256
+`0b8ec5eebdda65a981d985b10b5408b3edbf1ce7346b07afd0002abe1bc06b1c`。FIT 三个 payload 与
+zImage、initramfs、A1 DTB 逐字节一致；initramfs 内 regdb、签名和解压后的 CLM 也与包源逐字节
+一致。A3a 尚待实机，只验收缺失警告消失、`wlan0` 和四核稳定性不回退。扫描工具尚未加入，
+实际只读扫描属于 A3b。
+
+A3a 实机确认强制 cmdline 中存在 `cfg80211.ieee80211_regdom=CN`，日志不再出现
+`regulatory.db failed with error -2` 或 `no clm_blob available`，BCM4345/6 固件仍正常启动并
+创建 `wlan0`。CPU0–CPU3 均存在，四列 IPI2/IPI3 保持非零活动；A3a 因此完成。既有
+`cpufreq-dt ... -19` 与无线数据加载无关，继续作为独立 DVFS 问题保留。
+
+A3b 不引入完整发行版用户空间，而是新增 `tools/r1-nl80211-scan.c`：ARM EABI freestanding
+静态程序直接使用 generic netlink/nl80211，主动扫描后只输出 SSID、频率和 mBm 信号，不输出
+BSSID，也不包含关联、密钥或存储写逻辑。最终 FIT
+`build/artifacts/r1-linux-multiv7-v9-emmc-wifi-scan-a3b.itb` 的 SHA-256 为
+`931b616af63bdd24525fd983b65fb1985bfa61a7239e64cce0e817b8f6c64201`；scanner、initramfs 和
+FIT payload 均已静态核对。首版随后实机在 2.4/5 GHz 共返回 9 个 BSS，`scan_entries=9` 且
+退出码为 0；没有输出 BSSID，也没有关联网络。内核同时提示 scanner 请求 executable stack，
+功能虽正常但权限不合理。新增 `scripts/build-r1-nl80211-scan.sh` 并用链接器
+`-z noexecstack` 修正后，ELF `GNU_STACK` 已为 `RW`，重新封装 FIT SHA-256 为
+`9e0f11ed93ca8ce8ff8c2c96193c9d8f8918d43877c52386f51207b86aae6d3c`。该权限修正版已静态
+核对，尚未重复上板；扫描功能本身已经实机验证。
+
+### Bluetooth UART A1
+
+原厂 R1 DT 的 UART1 并非主线 `rk322x.dtsi` 默认 GPIO1_B1/B2/B0/B3 组，而是第二复用组：
+GPIO3_B6/B5 为 TX/RX，GPIO3_A7/A6 为 CTS/RTS；BT_REG_ON 为 GPIO2_D5，高有效。A1 新增
+`rk3229-phicomm-r1-emmc-open-optee-wifi-bt-uart-a1.dts`，显式定义这四个 alternate pins，
+启用硬件流控，并以 GPIO hog 拉高 BT_REG_ON。
+
+A1 刻意不添加 Broadcom serdev child，也不携带/下载 `BCM4345.hcd`，使 `/dev/ttyS1` 能用于
+115200 baud 的标准 HCI Reset 探针。这样先验证 SoC UART、引脚复用、RTS/CTS、上电 GPIO 与
+controller ROM 响应，再进入 HCD/波特率/`hci0` 阶段。最终 FIT：
+
+```text
+da80ee6cabed9af6419719a9daf99567f571b297b70a90209a2588535de10fa7  build/artifacts/zImage-wifi-bt-uart-a1
+6ad4e665a6d8307276cd83c8310c563be9443309bfb393a790ed7390906abeb5  build/artifacts/r1-initramfs-wifi-bt-uart-a1.cpio.gz
+8ffdee773192ce568beb9aff64ac8e4e94db158e5040cb366ffcf9442cd7876d  build/artifacts/rk3229-phicomm-r1-wifi-bt-uart-a1.dtb
+60b8cc08672d46c6702a268d2a2d4133d74ca5a96b70ead7e39d33bad99fc9b0  build/artifacts/r1-linux-multiv7-v9-wifi-bt-uart-a1.itb
+```
+
+反编译 DT 已确认 UART1 指向三个 alternate pinctrl phandle、BT_REG_ON output-high，且不存在
+Bluetooth/serdev 子节点；kernel 与 A3 逐字节相同。A1 尚待实机。
+
+A1 实机没有到达 init。首个明确错误是 gpio2 在注册自身 gpiochip 时处理 BT_REG_ON gpio-hog，
+GPIO request 返回 `-517`（`EPROBE_DEFER`）；gpio2/rockchip-pinctrl 因此整体注册失败，随后
+eMMC、UART1/UART2 与 I2C 都在 deferred-probe timeout 被忽略。initramfs 已成功解包，故不是
+`/init` 或 ramdisk 故障，而是 gpio-hog 引入的注册期循环依赖。
+
+A1r2 保留相同 kernel、initramfs 和 UART alternate pinctrl，移除 gpio2 子节点中的 hog，改用
+根节点 `regulator-fixed` + `regulator-always-on`/`boot-on` 驱动 GPIO2_D5。这样 fixed-regulator
+可以等待 gpiochip 完成注册后再申请 BT_REG_ON。A1r2 FIT 为
+`build/artifacts/r1-linux-multiv7-v9-wifi-bt-uart-a1r2.itb`，SHA-256
+`1688800ce0f91de1475ba2cca0562b6a3e78bb14b2fa2b18723f74faa6acf677`；解包 payload 与最终 DT
+静态审计通过，尚待实机。
+
+A1r2 实机正常进入 shell，UART1 注册为 `/dev/ttyS1`，debugfs 确认 GPIO93/BT_REG_ON 为
+output-high，regulator summary 也显示 3.3 V enabled。关闭和开启 RTS/CTS 均未收到 115200
+HCI Reset response；解绑/重新绑定 fixed regulator 完成低→高电源复位后结果仍为空。UART DMA
+请求失败会回退 PIO，不作为无响应根因。
+
+主线 5.10 `rk3228_mux_route_data` 已包含 GPIO3_B5 function 1 对应的 UART1-1 route，并会写
+GRF offset `0x50` bit 11，所以当前 alternate RX pin 会自动选择正确路由，不应盲目交换 TX/RX。
+A1r3 新增原厂已证明的主机输出 BT_WAKE=GPIO3_D3，高有效；HOST_WAKE=GPIO3_D2 仍保持未绑定
+输入，serdev/HCD 继续后置。A1r3 FIT SHA-256 为
+`da312e92a29096e0d741dd85c23cfa5ec7654b2e04b546beecfda6de93a8153a`。实机确认 GPIO93/123
+均为 output-high、UART1-1 四个 pinmux 正确；HCI Reset 令 tty 统计从 `tx:0 rx:0` 变为
+`tx:4 rx:0`，证明主机已发送而 controller 未回应。
+
+A1r4 只增加蓝牙低速时钟候选：把原本为 module、当前 initramfs 不会加载的
+`CONFIG_COMMON_CLK_RK808` 改为 built-in，并由 always-on clock-backed regulator 请求
+RK805 CLK32KOUT2。A1r4 FIT SHA-256 为
+`3bc999abb1ba313d369afa2d9dde0f5e7d41cb1aee2299145f553435001a89d1`，尚待实机。
+
+模组已由丝印确定为 AzureWave AW-CM256SM/CYW43455。其模组资料显示 Bluetooth 走 UART、具有
+独立 LPO/BT_REG_ON/BT_WAKE/BT_HOST_WAKE，且启动时 host 应在 BT_REG_ON 上升前把 BT_WAKE
+驱动为低。A1r5 因而复用 A1r4 kernel，把 GPIO3_D3 改为 physical-low，并以 regulator supply
+dependency 排列 `CLK32KOUT2 → BT_WAKE → BT_REG_ON`。A1r5 FIT SHA-256 为
+`3ac5b522c6512b4ba008f4838417fa636c61e14291b1c85d33dc690a69212555`，尚待实机。
+
+手册进一步确认 WL_REG_ON 与 BT_REG_ON 在模组内部 OR，故 Wi-Fi 已上电时单独切换 BT_REG_ON
+不构成完整 POR；现有 Wi-Fi pwrseq 的 200 ms 已满足手册至少 150 ms 的 SDIO 等待要求。
+A1r6 改用主线 `hci_bcm` serdev 接管 Bluetooth shutdown/device-wakeup/host-wakeup/LPO 与 UART
+时序，并内建相关 BT 栈；原厂 `BCM4345.hcd` 已加入 initramfs。A1r6 FIT SHA-256 为
+`ccc6f63461bd903b7d366dc710a3b8d03215fd423d8cefbe09550b02ed13cfe3`，尚待实机创建 `hci0`。
+
+A1r6 实机已创建 `hci0`，识别 `BCM4345C0 (003.001.025) build 0000`；UART 双向统计、RTS/CTS、
+shutdown/device-wakeup 与 32768 Hz LPO 均通过。驱动明确请求 `brcm/BCM4345C0.hcd`。A1r7 只为
+原厂 `BCM4345.hcd` 增加该精确 symlink，kernel/DT 不变；FIT SHA-256 为
+`80f914a9c2100abe19b43774781d2295ffb4e7da05607f488032a4aee7a26552`，待验证 Patch 下载。
+
+A1r7 实机已命中 `brcm/BCM4345C0.hcd`，firmware 从 `build 0000` 更新至 `build 0124`；`hci0`
+存在，UART1 patchram 统计为 `tx:54092 rx:3205`。由此 AW-CM256SM/CYW43455 的主线内核
+Bluetooth bring-up 完成，下一步进入 management 用户空间、扫描与 BlueZ。
+
+DDR 471 启动输出的 300 MHz 是初始化/训练频率，不是运行期 DVFS 证据。当前 clean 5.10 没有
+RK322x DMC/devfreq 驱动；恢复 DDR DVFS 还依赖 Rockchip TEE DDR SMC ABI 与板级 timing/OPP，
+已延后到固定外设稳定之后。

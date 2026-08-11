@@ -1,0 +1,53 @@
+/dts-v1/;
+
+/* Wi-Fi A3b: verified A3a plus a BSSID-redacting nl80211 scan tool. */
+/ {
+	description = "Phicomm R1 Linux 5.10 Wi-Fi scan A3b";
+	#address-cells = <1>;
+
+	images {
+		kernel {
+			description = "Linux 5.10.262 multi_v7 four-core Wi-Fi A3a kernel";
+			data = /incbin/("../build/artifacts/zImage-5.10-multiv7-v9-wifi-a3");
+			type = "kernel";
+			arch = "arm";
+			os = "linux";
+			compression = "none";
+			load = <0x62000000>;
+			entry = <0x62000000>;
+			hash-1 { algo = "sha256"; };
+		};
+
+		ramdisk {
+			description = "R1 A3 regulatory initramfs plus minimal nl80211 scanner";
+			data = /incbin/("../build/artifacts/r1-initramfs-wifi-a3b.cpio.gz");
+			type = "ramdisk";
+			arch = "arm";
+			os = "linux";
+			compression = "none";
+			load = <0x64000000>;
+			hash-1 { algo = "sha256"; };
+		};
+
+		fdt {
+			description = "R1 verified Wi-Fi SDIO A1 hardware DT";
+			data = /incbin/("../build/artifacts/rk3229-phicomm-r1-emmc-open-optee-wifi-sdio-a1.dtb");
+			type = "flat_dt";
+			arch = "arm";
+			compression = "none";
+			load = <0x65000000>;
+			hash-1 { algo = "sha256"; };
+		};
+	};
+
+	configurations {
+		default = "config-1";
+
+		config-1 {
+			description = "R1 Wi-Fi read-only scan A3b";
+			kernel = "kernel";
+			ramdisk = "ramdisk";
+			fdt = "fdt";
+		};
+	};
+};

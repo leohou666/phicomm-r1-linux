@@ -1,0 +1,51 @@
+/dts-v1/;
+
+/ {
+	description = "Phicomm R1 Linux 5.10 AW-CM256SM Bluetooth serdev A1r6";
+	#address-cells = <1>;
+
+	images {
+		kernel {
+			description = "Linux 5.10.262 multi_v7 Wi-Fi plus built-in Broadcom HCI UART";
+			data = /incbin/("../build/artifacts/zImage-wifi-bt-serdev-a1r6");
+			type = "kernel";
+			arch = "arm";
+			os = "linux";
+			compression = "none";
+			load = <0x62000000>;
+			entry = <0x62000000>;
+			hash-1 { algo = "sha256"; };
+		};
+
+		ramdisk {
+			description = "R1 rescue initramfs with Wi-Fi data and BCM4345 HCD";
+			data = /incbin/("../build/artifacts/r1-initramfs-wifi-bt-serdev-a1r6.cpio.gz");
+			type = "ramdisk";
+			arch = "arm";
+			os = "linux";
+			compression = "none";
+			load = <0x64000000>;
+			hash-1 { algo = "sha256"; };
+		};
+
+		fdt {
+			description = "R1 AW-CM256SM/CYW43455 serdev DT";
+			data = /incbin/("../build/artifacts/rk3229-phicomm-r1-wifi-bt-serdev-a1r6.dtb");
+			type = "flat_dt";
+			arch = "arm";
+			compression = "none";
+			load = <0x65000000>;
+			hash-1 { algo = "sha256"; };
+		};
+	};
+
+	configurations {
+		default = "config-1";
+		config-1 {
+			description = "R1 Bluetooth serdev A1r6";
+			kernel = "kernel";
+			ramdisk = "ramdisk";
+			fdt = "fdt";
+		};
+	};
+};

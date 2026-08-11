@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+
+/*
+ * USB Host A1 on top of the verified C1 four-core/eMMC device tree.
+ *
+ * The original R1 Linux 3.10 log proves that all three EHCI/OHCI pairs
+ * register successfully.  Keep the DWC2 OTG controller disabled because
+ * its SPI 23 is GIC INTID 55, whose stale active state previously blocked
+ * normal-world interrupts after the MaskROM/U-Boot USB download path.
+ */
+
+#include "rk3229-phicomm-r1-emmc-open-optee-timer-minimal.dts"
+
+&u2phy0 {
+	status = "okay";
+};
+
+&u2phy0_host {
+	status = "okay";
+};
+
+&u2phy1 {
+	status = "okay";
+};
+
+&u2phy1_otg {
+	status = "okay";
+};
+
+&u2phy1_host {
+	status = "okay";
+};
+
+&usb_host0_ehci {
+	status = "okay";
+};
+
+&usb_host0_ohci {
+	status = "okay";
+};
+
+&usb_host1_ehci {
+	status = "okay";
+};
+
+&usb_host1_ohci {
+	status = "okay";
+};
+
+&usb_host2_ehci {
+	status = "okay";
+};
+
+&usb_host2_ohci {
+	status = "okay";
+};
+
+&u2phy0_otg {
+	status = "disabled";
+};
+
+&usb_otg {
+	dr_mode = "peripheral";
+	status = "disabled";
+};

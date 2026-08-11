@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+
+/*
+ * Bluetooth UART A1r4.
+ *
+ * A1r3 proved that UART1 transmits on the correct alternate pin group while
+ * BT_REG_ON and BT_WAKE are high, but the controller returned no bytes.
+ * Keep that setup unchanged and enable RK805 CLK32KOUT2 as the Bluetooth
+ * low-power 32.768 kHz clock candidate.
+ */
+
+#include "rk3229-phicomm-r1-emmc-open-optee-wifi-bt-uart-a1r3.dts"
+
+/ {
+	bt_lpo_clock_enable: regulator-bt-lpo-clock-enable {
+		compatible = "regulator-fixed-clock";
+		regulator-name = "bt_lpo_clock_enable";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		clocks = <&rk805 1>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+};
+
+&rk805 {
+	/* Mainline rk808-clkout exposes CLK32KOUT1=0 and CLK32KOUT2=1. */
+	#clock-cells = <1>;
+};

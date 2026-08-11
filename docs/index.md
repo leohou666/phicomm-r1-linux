@@ -12,7 +12,112 @@
 
 Phase 0“保护现场”已完成大部分采集工作：串口、MaskROM、完整 eMMC User Area 备份、关键分区提取、boot/recovery 拆解以及原厂无线和音频固件导出均已完成。整个备份和拆解过程没有向 eMMC 写入数据。
 
-开源 OP-TEE RAM-only 目标已达成：R1 已通过 MaskROM `db`、vendor DDR 471、主线 SPL/U-Boot 2026.10-rc1、开源 RK322x OP-TEE 3.7 和 clean Linux 5.10.262 双核链进入 BusyBox 救援 shell。实机日志确认 PSCI v1.0、CPU0/CPU1 online、`/init` 与交互 shell；用户随后确认 uptime 超过 30 秒。当前保存的串口附件本身只记录到 uptime `8.99`，因为 initramfs 缺少 `sleep` applet 链接，故“>30 秒”按证据规则保留为用户实机确认而非该日志直接证明。
+开源 OP-TEE RAM-only 目标已达成：R1 已通过 MaskROM `db`、vendor DDR 471、主线 SPL/U-Boot 2026.10-rc1、开源 RK322x OP-TEE 3.7 和 clean Linux 5.10.262 进入 BusyBox 救援 shell。双核 clean v8 由用户确认 uptime 约 700 秒；修正一键脚本默认 cleanup SPL 后，四核 clean v9 也确认 CPU0–CPU3 online、uptime 到 72.92 秒且四核 IPI 均有增长，越过旧约 30 秒冻结边界。
+
+白名单式四核救援 v10 的实机日志暴露了两项过度裁剪：缺少 `BINFMT_SCRIPT` 使 `/init` 以 `ENOEXEC` 失败，内核回退 `/bin/sh`，所以虽已编入 `PROC_FS` 却没有挂载 `/proc`；缺少 `ARM_PSCI` 又使系统只启动 CPU0。v10 已判为无效基线。修正后的 v11 补回 PSCI、脚本执行、time32/POSIX timers、futex、epoll/timerfd/eventfd、inotify、SysV IPC、RTC 和低成本诊断接口，仍明确关闭 CAN、NFS/NTFS、PCI、MTD、图形、声音和无线驱动。v11 zImage 为 2,721,856 B，尚待 RAM-only 实机验证。
+
+外设 bring-up 已改为“冻结救援核心 + 单外设分层”：构建脚本可依次合并多个 config fragment，
+并为每次试验生成带 tag 的 zImage、DTB、最终配置和预处理 DTS。首个
+`rescue-v11-emmc-a1` 候选保持 v11 最终配置不变（除版本后缀），只在新 DT 中启用 eMMC、
+RK805 regulator 及其前置链，同时显式禁用 USB。主机构建和静态 DT 审计已通过；下一步以同一
+新 zImage 跑最小 DT 的 A 线已经由用户确认四核、虚拟文件系统、shell 和 uptime >30 秒均正常。
+eMMC B1 随后成功只读枚举 RK805、HS200 Samsung `8GME4R`、user/boot0/boot1/RPMB，但
+CPU1–CPU3 在 eMMC probe 前启动失败，所以完整板级 DT 仍不是合格基线。下一 B2 保持内核、
+initramfs 与 eMMC 描述不变，只把 arch timer 合同恢复为已验证最小 DT 的形式；实机三个次核
+仍依次超时，故 timer 单变量假说已否定。当前 C1 改为直接复用已验证四核稳定的 multi_v7
+clean v9 zImage，保持 B2 DTB 与修正 initramfs 不变，以判断问题来自 v11 裁剪 config 还是完整
+板级 DT。C1 实机已使 CPU0–CPU3 在 35 ms 内全部 online，且 eMMC 继续正常枚举，故边界明确在
+内核 config/早期执行差异；C2 只补 Cortex-A7 erratum 814220 后仍为单核，已否定该单变量。
+当前 B3 保持失败 v11 kernel 和完整 eMMC DT，只删除 SMP 前 CRU 批量 `assigned-clocks/rates`，
+可在后续最小化阶段检查 clock reprogramming 是否参与故障。当前外设 bring-up 不再等待该二分，
+直接以已验证四核/eMMC 的约 10 MiB multi_v7 C1 为工作基线。
+
+用户补交的完整 B1 日志再次确认上述边界，并暴露 initramfs 只缺 BusyBox `echo` 等入口链接；
+该问题已在构建脚本中补齐。为减少后续反复串口下载，已完成一个尚待实机的 U-Boot proper
+USB DFU RAM-only 候选：DFU/MMC、Fastboot、RockUSB 和 mass-storage 后端均关闭。v11 kernel、
+修正 initramfs 与 B2 DTB 已封装为单个 Linux FIT，可在 U-Boot 中下载到 `0x6a800000` 后
+`bootm`；所有 payload 已在主机侧解包逐字节核对。用户确认 USB 下载已足够快并运行到 B2
+Linux，但保存日志没有包含传输计时。C1 的 10,809,808-byte FIT 已通过同一路径验证四核与
+eMMC；C2 FIT 也完成 hash 验证和启动但仍单核。当前 USB 脚本默认恢复为 C1 FIT，B3 仅保留
+为后续裁剪诊断件。
+
+当前第一个外设单变量是 USB Host A1：保持 C1 kernel/initramfs 不变，只在 DT 中恢复原厂日志
+已证明可注册的三组 EHCI/OHCI fixed-host 控制器；DWC2 OTG 继续禁用，避免重新进入 INTID 55
+路径。A1 FIT 已完成 DT 状态、子镜像哈希和提取后逐字节核对，尚待 RAM-only 实机验证。
+DDR 471 的 `300MHz` 仅表示初始化频率；RK322x DDR DVFS 所需的 DMC/devfreq 驱动、TEE SMC
+ABI 与 timing/频点表尚未建立，已作为后续 TODO，不阻塞当前外设 bring-up。
+
+用户随后确认 R1 成品是没有 USB 外设接口、也没有 SD 卡槽的智能音箱。USB Host A1 因而降级为
+SoC/DFU 研究产物，不再安排实机外设测试；真正的板载外设顺序改为 SDIO Wi-Fi、UART 蓝牙、
+I2C/SPI 控制与 I2S 音频。Wi-Fi 首轮只恢复 `0x30010000` SDIO 和 GPIO2_D2 WL_REG_ON，先证明
+AP6255/AP6335 SDIO function 枚举，再单独加入 cfg80211/brcmfmac 与固件/NVRAM。
+
+Wi-Fi SDIO A1 已完成主机构建：继续使用 C1 kernel/initramfs，DT 仅增加 GPIO2_D2 power
+sequence 与 `0x30010000` 4-bit/37.5 MHz SDIO。最终 DT/FIT 已静态核对并解包比较；下一步
+RAM-only 上板只判断 SDIO card/function 是否出现，不提前要求 `wlan0`。
+
+Wi-Fi A1 随后实机通过：`30010000.mmc` 成功执行 pwrseq，`mmc1` 以约 35.7 MHz 枚举焊接的
+SDIO card，sysfs 出现三个 vendor `0x02d0`/device `0xa9bf` function；四核仍为 `0-3`，eMMC
+继续正常。由此已验证板载 Wi-Fi 确实走 SDIO。下一步 A2 只增加 cfg80211/brcmfmac 与已提取
+的 BCM43455/AP6255 固件、NVRAM，目标是创建 `wlan0`。
+
+Wi-Fi A2 已完成主机构建：A1 DT 不变，multi_v7 v9 config 只增加内建 cfg80211/brcmfmac SDIO
+及调试输出，新 initramfs 按主线文件名携带原厂已验证的 BCM43455 firmware/AP6255 NVRAM。
+11,468,836-byte FIT 已解包逐字节核对，尚待 RAM-only 实机创建 `wlan0`；扫描与联网不属于 A2。
+
+A2 随后实机通过：brcmfmac 识别 BCM4345/6、下载并运行 7.45.100.6 firmware，`wlan0` 已绑定
+到 `30010000.mmc` 的 SDIO function 1。当前缺 `regulatory.db` 和 CLM blob，日志明确提示信道
+可能受限。用户进一步确认该版本可长期运行，CPU0–CPU3 的 IPI2/IPI3 均有活动，四核稳定性
+回归通过。A3a 主机产物现已加入 Fedora `wireless-regdb 2026.05.30`、`linux-firmware 20260622`
+提供的 BCM43455 CLM blob，并以强制 kernel cmdline 设置初始监管域 `CN`；FIT 已解包逐字节
+核对。A3a 随后实机通过：CN cmdline 生效，regdb/CLM 缺失警告均消失，`wlan0` 与四核 IPI
+活动保持正常。A3b 已打包一个约 8 KiB、无 libc/libnl 依赖且隐藏 BSSID 的 freestanding
+nl80211 扫描器，FIT 静态审计通过，下一步只做实机扫描。
+A3b 随后实机扫描成功：在 2.4 GHz 和 5 GHz 共返回 9 个 BSS，`scan_entries=9` 且退出码为 0；
+工具按设计未输出 BSSID，也未关联网络。首版 ELF 被内核提示 executable stack，已在可复现
+构建脚本中加入 `-z noexecstack` 并重新封装，当前默认 FIT 的该警告修正版尚未重复上板。
+
+外设顺序现已进入 UART Bluetooth。原厂 R1 实际使用 UART1 的第二复用组 GPIO3_B6/B5
+（TX/RX）和 GPIO3_A7/A6（CTS/RTS），不是主线 `rk322x.dtsi` 默认 GPIO1 组。Bluetooth A1
+已保持 A3 kernel 不变，只在 DT 加入该 alternate pinctrl，并用 GPIO hog 将 GPIO2_D5
+BT_REG_ON 拉高；没有 serdev 子节点、没有 HCD 下载。下一步从 `/dev/ttyS1` 以 115200 8N1
+和硬件流控发送标准 HCI Reset，先验证物理 UART/controller ROM 链路。
+首个 A1 实机在 init 前失败：GPIO2 注册自己的 BT_REG_ON hog 时返回 `-EPROBE_DEFER`，导致整个
+gpio2/pinctrl 注册失败，并连带阻塞 eMMC、UART1/UART2 和 I2C。A1r2 已移除 gpio-hog，改用
+根节点 always-on fixed regulator，让 BT_REG_ON 在 gpiochip 注册后申请；kernel/initramfs 和
+UART alternate pinctrl 均不变，下一步重跑启动与 HCI Reset。
+A1r2 随后成功进入 shell，`ttyS1` 注册且 GPIO2_D5/`bt_reg_on` 为 output-high；关闭/开启 RTS/CTS、
+手动解绑再绑定 regulator 形成低→高复位后，115200 HCI Reset 仍无响应。主线 RK3228 pinctrl
+源码确认 GPIO3_B5 会自动设置 GRF 0x50 bit 11 的 UART1-1 route，因此不采用盲目交换 TX/RX。
+A1r3 依据原厂 DT 再拉高主机输出 GPIO3_D3 BT_WAKE，HOST_WAKE 暂不绑定，待重新测试 ROM HCI。
+A1r3 实机进一步证明 UART1-1 pinmux 与两个控制 GPIO 正确，HCI Reset 后 UART 统计为 `tx:4 rx:0`；
+即 SoC 已发送而 controller 完全未回应。A1r4 现将此前仅为 module、实际未加载的 RK805 32 kHz
+clock provider 改为内建，并以 always-on consumer 开启 CLK32KOUT2，作为下一项单变量实机测试。
+模组丝印进一步确定为 AzureWave AW-CM256SM/CYW43455。其参考启动时序要求 LPO 有效、
+BT_DEV_WAKE 为低后再拉高 BT_REG_ON，说明 A1r3/A1r4 把 GPIO3_D3 保持高并不正确。A1r5 已按
+上述顺序重做 DT，复用同一 A1r4 kernel，等待 RAM-only HCI Reset 验证。
+A1r5 实机三项状态均符合预期但仍为 `tx:4 rx:0`；对照主线 `hci_bcm` 后，下一单变量改为
+REG_ON 后将 BT_WAKE 从初始 low 切至 high，并等待至少 100 ms 再发送 HCI。
+A1r6 已改用标准 `hci_bcm` serdev，内建 Bluetooth/HCI UART/BCM 驱动并绑定 LPO、三个控制/唤醒
+GPIO、RTS/CTS；原厂 BCM4345 HCD 已加入 initramfs。FIT 已完成静态审计，下一步实机以驱动日志、
+firmware 请求名和 `/sys/class/bluetooth/hci0` 为验收证据。
+A1r6 随后实机成功创建 `hci0` 并识别 BCM4345C0；UART 双向、RTS/CTS、LPO 与控制 GPIO 全部
+通过。驱动明确请求 `brcm/BCM4345C0.hcd`，A1r7 已为原厂 HCD 增加该精确别名，等待验证 Patch
+下载和固件 build 变化。
+A1r7 实机已完成 HCD Patch：controller 从 `build 0000` 更新到 `build 0124`，`hci0` 正常存在，
+UART patchram 双向传输量与日志一致。Bluetooth 内核 bring-up 阶段完成；下一步是加入最小 BlueZ/
+management 用户空间，先验证 controller power、LE/BR-EDR 扫描，再进入配对与 A2DP。
+
+为缩短重复进入 U-Boot 的时间，已确认不能简单把 SPL 与 ITB 再次拼接：当前 USB472 本来就是
+39 KiB SPL 紧跟约 797 KiB FIT，而实机地址探针已经证明 MaskROM `0x472` 有效交付窗口只覆盖
+SPL，后续 payload 不可靠。新的 RAM-only 加速候选改为 SPL 直接轮询 UART2 RX 寄存器，绕过
+通用 console/scheduler 路径，目标是在 `--tx-gap-us 0` 下可靠传输；尚未实机，不替换默认链。
+
+本轮已将两条学习线整理为可独立复习的专题文档：[Linux 内核裁剪方法论](acknowledge/kernel-trimming.md)
+记录 v9→v10→v11 的白名单裁剪和失败审计；[ARMv7 启动链、OP-TEE 与 GICv2 调试](acknowledge/arm-boot-gicv2.md)
+记录 BootROM/471/SPL/OP-TEE/U-Boot proper 的边界、PSCI/SMP/GICv2 基础，以及从次核路标到
+secure INTID55/APR0 的完整定位和 clean kernel 验证。下一实机步骤是
+`rescue-v11-emmc-a1` 的最小-DT/eMMC-DT RAM-only A/B，不改变 eMMC 内容。
 
 早期主线 bring-up 基线中，Linux `6.18.42` 从 recovery 分区经原厂 `bootrk` 启动，修正为 `CONFIG_DEBUG_UART_VIRT=0xfed30000` 后完整进入 BusyBox 救援 shell。四核 Cortex-A7、512 MiB RAM、UART2 控制台和 Samsung eMMC HS200 均已实机工作；initramfs 没有自动挂载或修改存储。该旧链的四核和双核会在约 30 秒停止，单核已稳定超过 135 秒；watchdog、次核 idle、默认 RCU stall 窗口、停止前的 timer/IPI/RCU 失活、PSCI binding、NO_HZ、SMP timer migration、816 MHz ARMCLK 和完整上游外设 DT 均已排除。Linux `5.10.262` 使用同一最小 DT 和双核基线仍复现同类停止，证明不是 6.18 特有回归；后续 RAM-only 诊断已将当前混合链问题定位并修复为 RockUSB 遗留 GIC INTID 55/APR0，见上段最新状态。
 
@@ -27,7 +132,7 @@ Phase 0“保护现场”已完成大部分采集工作：串口、MaskROM、完
 | USB MaskROM | VID `0x2207`，PID `0x320b` | [USB 信息](../backup/00-usb-info.txt) |
 | MaskROM RAM Loader | 匹配 DDR V1.06/Boot1 2.37 的 loader 已由 `db` 成功下载，串口进入 `UsbHook`；`rci/rid/rfi` 全部通过且未写存储。usbplug 因 `bcdUSB=0x0200` 被工具误标为 Maskrom | [逆向学习记录](reverse-engineering-journal.md) |
 | 现代 U-Boot RAM 候选 | 原厂 DDR 471 + 主线 472 已从 RAM 进入 U-Boot 2026.10-rc1 交互提示符；512 MiB DRAM、DM 和 eMMC 已枚举 | [逆向学习记录](reverse-engineering-journal.md) |
-| RK322x 开源 OP-TEE | 423,248-byte `rk322x_tee_os.bin` 已在 R1 由 SPL FIT 装入 `0x68400000`，PSCI v1.0 双核 Linux 进入 shell；用户确认 uptime >30 秒 | [clean v8 首次 shell 日志](../build/artifacts/clean-v8-open-optee-first-shell-20260810.log) |
+| RK322x 开源 OP-TEE | 423,248-byte `rk322x_tee_os.bin` 已在 R1 由 SPL FIT 装入 `0x68400000`，PSCI v1.0 双核与四核 Linux 均进入 shell；双核用户确认约 700 秒，四核已直接记录到 72.92 秒 | [clean v8 首次 shell 日志](../build/artifacts/clean-v8-open-optee-first-shell-20260810.log) |
 | R1 原厂 Trust OS 版本 | 提取自 trust 分区的 `r1-vendor-tee.bin`（332,232 B，SHA-256 `aecdf2b7...`）内部版本串 `1.0.1-54-g0d46013`，构建于 2016-09-29；OP-TEE 派生，比 rkbin v1.90/v2.00 都早。rkbin 的 "2.0"（`rk322x_tee_v2.00.bin`，2019-01-31）内部仍是 `1.0.1-86-g31e775b` | [逆向学习记录](reverse-engineering-journal.md) |
 | 外置启动介质 | R1 PCB 没有 SD 卡槽，不能采用通用 RK322x 盒子的 SD 启动流程 | 用户实物确认 |
 | USB 调试供电 | 必须使用原装电源；USB-TTL 仅接 GND/TX/RX，不能用其 5 V 给整机供电 | [逆向学习记录](reverse-engineering-journal.md) |
@@ -42,7 +147,7 @@ Phase 0“保护现场”已完成大部分采集工作：串口、MaskROM、完
 | AK7755 连接 | I2C1 地址 `0x19`，音频连接 I2S2（`0x100e0000`） | 原厂 DTB 与启动日志 |
 | 主线内核基线 | Linux `6.18.42` LTS，ARM zImage 构建通过 | [主线 Linux Bring-up](mainline-bringup.md) |
 | 最小主线 DTB | 25,020 字节，反编译后关键节点完整 | [主线 Linux Bring-up](mainline-bringup.md) |
-| 救援 initramfs | 静态 32 位 ARM BusyBox，重复构建逐字节一致 | [主线 Linux Bring-up](mainline-bringup.md) |
+| 救援 initramfs | 静态 32 位 ARM BusyBox，重复构建逐字节一致；当前默认 BusyBox 来自原厂 recovery并静态链接 bionic，故时区调用会提及 `ANDROID_DATA/ANDROID_ROOT` | [主线 Linux Bring-up](mainline-bringup.md) |
 | U-Boot Fastboot | 可由 Android shell 进入；`secure: yes`、`unlocked: no` | [主线 Linux Bring-up](mainline-bringup.md) |
 | 公开 R1 Root 教程 | 实质为从 LBA 0 写入第三方 3166 预 Root 整盘镜像，不是原系统内提权，也不会自动解锁 U-Boot Fastboot | [逆向学习记录](reverse-engineering-journal.md) |
 | 原厂 recovery ADB | 已实机枚举；`adb root` 后 adbd 仍为 UID 2000，SELinux 阻止向 tmpfs/cache 推送；UART XMODEM 可向 RAM 传输 | [逆向学习记录](reverse-engineering-journal.md) |
@@ -102,8 +207,9 @@ Phase 0“保护现场”已完成大部分采集工作：串口、MaskROM、完
 7. 最小原厂同构 DT 仍在约 30 秒停止，排除完整上游 `rk322x.dtsi` 外设节点冲突。tracefs 试验因极简 shell 缺少 `[` 命令而没有启用任何事件，随后阻塞在 `trace_pipe`，不能作为冻结证据。
 8. Linux `5.10.262-phicomm-r1` 最小-DT 双核对照已复现同类停止，排除 6.18 特有回归。R1 没有 SD 卡槽，不能直接采用 Armbian 的 SD 启动链。
 9. 真 MaskROM 下独立 `TARGET_PHICOMM_R1` 已进入现代 U-Boot 提示符；开源 OP-TEE FIT 曾得到 `FITF os=17 ret=0` 并推进到 OP-TEE 跳转边界。因 472 交付窗口限制，当前采用瘦身 SPL + UART YMODEM 外置 FIT：实机已到 `Trying to boot from UART` 并输出 `C`，证明接收端已就绪。首传的 `sz -Y` 实际发出 ZMODEM `rz` 前导，故被 YMODEM 接收端 NAK；本机伪串口已复现，属于主机协议错误而非 R1、FIT 或 OP-TEE 失败。下一次仅用串口终端的本地命令功能（必须独占同一串口，1500000 8N1、无流控）运行 `sb -k -vv build/artifacts/r1-ymodem-fit.itb`；成功标准首先是 `Loaded 796672 bytes`，随后记录 `sm`、`L/M/N/O/P/Q/R/T`。全程只执行 RAM `db`，不覆盖 parameter/idb、U-Boot、trust。
-10. YMODEM 已实机完整传入 FIT，开源 OP-TEE `3.7.0` 已初始化并提供 PSCI v1.0。secure SPL 证明 MaskROM/RockUSB 在进入 TEE 前遗留唯一 active 的 USB OTG INTID 55 与 APR0=`1`；精确清理后 `GC` 为 RPR=`0xff`、APR0=`0`、无 active 位。clean v8 随后正常越过旧 `No ATAGs?` 边界，CPU0/CPU1 online，于 2.078 秒执行 `/init` 并进入 shell；用户确认 uptime 超过 30 秒。原 CPU0 IRQ/SGI 死锁及当前 RAM-only SMP 冻结已解决。
-11. 下一步把 INTID 55 workaround 从通用 `arch/arm/lib/spl.c` 收敛到 R1/RockUSB 板级 hook，补齐 initramfs applet 链接并做多次冷启动、四核和更长时长测试；随后再处理 USB、eMMC 与完整外设 DT。
+10. YMODEM 已实机完整传入 FIT，开源 OP-TEE `3.7.0` 已初始化并提供 PSCI v1.0。secure SPL 证明 MaskROM/RockUSB 在进入 TEE 前遗留唯一 active 的 USB OTG INTID 55 与 APR0=`1`；精确清理后 `GC` 为 RPR=`0xff`、APR0=`0`、无 active 位。clean v8 随后正常越过旧 `No ATAGs?` 边界，CPU0/CPU1 online，于 2.078 秒执行 `/init` 并进入 shell；用户确认 uptime 约 700 秒。原 CPU0 IRQ/SGI 死锁及当前 RAM-only SMP 冻结已解决。
+11. clean 四核 v9 已用修正后的 INTID55 cleanup SPL 实机通过。白名单救援 v11 的最小-DT A 线四核正常，完整 eMMC DT 的 B1/B2 都只读枚举成功但 CPU1–CPU3 未 online；B2 已否定 arch-timer，C2 又否定 Cortex-A7 814220 单变量。C1 用同一完整 B2 DT/initramfs 换回 multi_v7 v9 后四核与 eMMC 同时通过，现作为外设工作基线；B3 CRU A/B 延后到最小化阶段。
+12. 已从 C1 构建 USB Host A1：只开启原厂实机日志证明存在的三组 EHCI/OHCI Host，继续禁用 DWC2 OTG/INTID55 路径；主机侧 DT/FIT 审计通过，下一步 RAM-only 上板枚举 root hub 和外接 U 盘。
 
 ## 文档导航
 
@@ -121,6 +227,8 @@ Phase 0“保护现场”已完成大部分采集工作：串口、MaskROM、完
 | [Recovery 前置知识](acknowledge/recovery.md) | Android / Rockchip recovery 模式的基础知识 |
 | [SELinux 前置知识](acknowledge/selinux.md) | SELinux 概念、AVC 解读与绕过策略 |
 | [U-Boot 前置知识](acknowledge/uboot.md) | U-Boot 架构、配置、移植与调试 |
+| [ARMv7 启动链、OP-TEE 与 GICv2 调试](acknowledge/arm-boot-gicv2.md) | BootROM/471/SPL/OP-TEE/U-Boot proper 分工、PSCI/SMP/GICv2 原理、INTID 55 实战与面试问答 |
+| [Linux 内核裁剪方法论](acknowledge/kernel-trimming.md) | Kconfig/Kbuild、白名单裁剪、依赖审计、实机验收、R1 v10 反例与面试表达 |
 | [主机侧调试工具](acknowledge/debug-tools.md) | strings/objdump/nm/libfdt/pack-unpack 等工具的场景、用法与判读 |
 | [Firmware 说明](../firmware/README.md) | 原厂固件的本地保存原则 |
 | [Patches 说明](../patches/README.md) | 后续补丁的组织方式 |
@@ -185,8 +293,14 @@ Phase 0“保护现场”已完成大部分采集工作：串口、MaskROM、完
 | `build/artifacts/zImage-5.10-psci-v1-gic400-register-snapshot-v5` | Linux 5.10.262 GIC 接收侧诊断：保留 v4，并在 CPU0/CPU1 GIC 初始化前后输出 IGROUPR0、SGI/PPI enable/pending/active、GICD/GICC control 与 PMR；10,166,784 B，SHA-256 `5ebe13a90b52f104a45e3822506b1e97a71da376be2732a67af238dedf638bcd`，CRC32 `f118e436`；待 RAM-only 实机测试。 |
 | `build/artifacts/zImage-5.10-psci-v1-gic400-register-printk-v6` | v5 的可靠输出修正版；实机四组快照证明 CPU0/CPU1 normal-world 可见 pre/post 状态完全一致，Linux 仅把两核 GICC_PMR 同样从 `0` 设为 `0xf0`；排除可见 GIC 初始化差异。10,166,784 B，SHA-256 `33284f675c48e0e7753163829a443ee5d0ac44d00682b7de627e812032b7ab2c`，CRC32 `b53f1e7a`。 |
 | `build/artifacts/zImage-5.10-psci-v1-gic400-psci-wait-state-v7` | 实机证明 CPU0 IRQ unmasked、PPI 30 pending/HPPIR=`0x1e`，但 GICC_RPR 从 Linux 最早期到等待前始终异常为 `0x00`；CPU1 RPR 正常为 idle `0xff`。根因高度收敛到 OP-TEE 主核遗留 secure active interrupt/APR，阻挡普通 PPI/SGI 抢占。10,166,784 B，SHA-256 `533f4c8b2f2354b6ff3425cae92eaac40ba0a5f0d46389f2c954d9f3371fe3bb`，CRC32 `712226dd`。 |
-| `build/artifacts/zImage-5.10-psci-v1-gic400-clean-post-int55-v8` | 从未修改的 Linux 5.10.262 commit `065a677fad98` 独立构建的清洁对照；不含 UART 路标、polling completion 或 SGI filter A/B。实机经 INTID55 cleanup loader 双核进入 shell，用户确认 >30 秒。10,166,784 B，SHA-256 `fc5d1e207ffc143c2d34cb59296f0e9b07b3051e7e085404f37873e2d85cd5e7`，CRC32 `a262021a`。 |
-| `build/artifacts/clean-v8-open-optee-first-shell-20260810.log` | clean v8 经开源 OP-TEE 的首次双核 shell 日志；直接记录到 uptime 8.99 秒，用户另确认已超过 30 秒。15,438 B，SHA-256 `035930590c099a04285d6ee2db955d156e63e75fc26e6d150eb6097469d960e1`。 |
+| `build/artifacts/zImage-5.10-psci-v1-gic400-clean-post-int55-v8` | 从未修改的 Linux 5.10.262 commit `065a677fad98` 独立构建的清洁对照；不含 UART 路标、polling completion 或 SGI filter A/B。实机经 INTID55 cleanup loader 双核进入 shell，用户确认 uptime 约 700 秒。10,166,784 B，SHA-256 `fc5d1e207ffc143c2d34cb59296f0e9b07b3051e7e085404f37873e2d85cd5e7`，CRC32 `a262021a`。 |
+| `build/artifacts/zImage-5.10-psci-v1-gic400-clean-4core-v9` | clean v8 的四核单变量 A/B；实机确认 CPU0–CPU3 online、uptime 到 72.92 秒且四核 IPI 均有增长。10,158,592 B，SHA-256 `5bc8624169e60ef4558cc78cb80ae887a2a4f798c2a824a9afecece29d3c2565`，CRC32 `14f97549`。 |
+| `build/artifacts/zImage-5.10-r1-rescue-minimal-4core-v10` | 已否定的过度裁剪候选：缺 `BINFMT_SCRIPT` 导致 `/init` `ENOEXEC`，缺 `ARM_PSCI` 导致只启动 CPU0。2,328,112 B，SHA-256 `e17c84d45130124a2c453be8f5b2bd7f46238bf0dd9744106c27cf1979e95333`；仅保留为失败证据。 |
+| `build/artifacts/zImage-5.10-r1-rescue-baseline-4core-v11` | 修正 v10 过度裁剪的下一候选：补回 PSCI、脚本格式、标准时间/事件/同步 ABI、RTC 和救援诊断接口，仍不含 CAN/NFS/NTFS/PCI/MTD/图形/声音。2,721,856 B，SHA-256 `997fcf92c97a6f623650daea226df40179684827f1ce3bce89ef3b449037cb7b`；待上板。 |
+| `build/artifacts/zImage-rescue-v11-emmc-a1` | 冻结救援核心后的首个外设分层内核；最终配置相对 v11 只有版本后缀变化。2,721,840 B，SHA-256 `5013b84d149e431f0c2886be8b4d0f8e0aea2e96acdd0de08b058332cb23861b`；配最小 DT 的 A 线已由用户确认四核、虚拟文件系统、shell 和 uptime >30 秒正常。 |
+| `build/artifacts/rk3229-phicomm-r1-rescue-v11-emmc-a1.dtb` | eMMC-only DT 候选：PSCI v1.0/v0.2，eMMC 8-bit/RK805 前置链启用，USB PHY/OTG 禁用。22,629 B，SHA-256 `7d343820991e8bc7592114c303e7a663b719e5c1015417bd1e044038d30635bc`；仅静态审计，待实机。 |
+| `build/artifacts/r1-phicomm-r1-uboot-spl-ymodem-gic-int55-cleanup-directrx-loader.bin` | 保留已验证 INTID55/APR0 cleanup，仅将 SPL YMODEM RX 改为直接轮询 UART2 寄存器的无节流候选。854,293 B，SHA-256 `ee8466d7217c5b9d52990d6c4393d32c4aeb8c63f92cdddfc6b02eb4e06e3015`；仅主机构建/解包验证，待 RAM-only 实机。 |
+| `build/artifacts/clean-v8-open-optee-first-shell-20260810.log` | clean v8 经开源 OP-TEE 的首次双核 shell 日志；直接记录到 uptime 8.99 秒，用户另确认约 700 秒。15,438 B，SHA-256 `035930590c099a04285d6ee2db955d156e63e75fc26e6d150eb6097469d960e1`。 |
 | `build/artifacts/r1-phicomm-r1-uboot-vendor-tee-v2.00-loader.bin` | 已废弃：无填充版 B 线，实机同遭 DTB 覆盖，SHA-256 `a4e3c7f6...` |
 | `build/tee/rk322x_tee_v2.00.bin` | 官方 v2.00 TEE blob（333,896 B，SHA-256 `a568cba0...`），专有二进制，不提交仓库 |
 | `build/artifacts/r1-phicomm-r1-uboot-optee-jump-trace.config` | 上述跳转路标候选的完整 U-Boot 配置（含 `SPL_LOAD_FIT_FULL`、`SPL_FIT_IMAGE_TINY`） |
