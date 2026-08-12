@@ -1,0 +1,13 @@
+#!/bin/sh
+
+cat <<'EOF'
+Starting a persistent NoInputNoOutput pairing agent.
+At the bluetoothctl prompt run:
+  default-agent
+  power on
+  pairable on
+  discoverable on
+Use "devices", "paired-devices", "trust XX:...", and "quit" as needed.
+EOF
+
+exec /usr/bin/bluetoothctl --agent NoInputNoOutput

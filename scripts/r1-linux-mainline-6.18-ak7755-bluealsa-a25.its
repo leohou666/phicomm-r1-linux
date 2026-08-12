@@ -1,0 +1,49 @@
+/dts-v1/;
+
+/ {
+	description = "Phicomm R1 Linux 6.18 Buildroot BlueALSA A25";
+	#address-cells = <1>;
+
+	images {
+		kernel-1 {
+			description = "Linux 6.18.42 R1 AK7755 automatic PCM amplifier";
+			data = /incbin/("../build/artifacts/zImage-mainline-6.18-ak7755-auto-amp-a24");
+			type = "kernel";
+			arch = "arm";
+			os = "linux";
+			compression = "none";
+			load = <0x62000000>;
+			entry = <0x62000000>;
+			hash-1 { algo = "sha256"; };
+		};
+
+		ramdisk-1 {
+			description = "Buildroot 2026.05.1 BlueZ 5.79 BlueALSA 4.3.1 SBC rootfs";
+			data = /incbin/("../build/buildroot-r1-bluealsa-6.18/images/rootfs.cpio.gz");
+			type = "ramdisk";
+			arch = "arm";
+			os = "linux";
+			compression = "gzip";
+			hash-1 { algo = "sha256"; };
+		};
+
+		fdt-1 {
+			description = "Phicomm R1 AK7755 automatic amplifier fail-safe DT";
+			data = /incbin/("../build/artifacts/rk3229-phicomm-r1-mainline-6.18-ak7755-auto-amp-a24.dtb");
+			type = "flat_dt";
+			arch = "arm";
+			compression = "none";
+			hash-1 { algo = "sha256"; };
+		};
+	};
+
+	configurations {
+		default = "config-1";
+		config-1 {
+			description = "R1 A25 ordinary ALSA plus SBC A2DP sink";
+			kernel = "kernel-1";
+			ramdisk = "ramdisk-1";
+			fdt = "fdt-1";
+		};
+	};
+};

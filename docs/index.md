@@ -442,6 +442,13 @@ secure INTID55/APR0 的完整定位和 clean kernel 验证。下一实机步骤�
 | Android recovery 自动恢复 | `init.rc` 启动 `install-recovery.sh`，使用 `recovery-from-boot.p` 重建非原厂 recovery；首次测试因此启动回原厂 3.10 | [逆向学习记录](reverse-engineering-journal.md) |
 | 受控实机回滚 | U-Boot 存活时，PCB 按键可进 Loader；恢复原始 misc BCB 并读回比较后，Android 已正常启动 | [逆向学习记录](reverse-engineering-journal.md) |
 
+Audio A24 与 BlueALSA A25 已完成主机侧候选。A24 让普通 playback PCM 生命周期同步控制功放，
+capture 不碰功放，并保留与普通 PCM 严格互斥的 root-only 诊断入口。A25 使用 Buildroot 2026.05.1
+生成 ARMv7 hard-float/musl rootfs，固定 Linux 6.18 headers、BlueZ 5.79、BlueALSA 4.3.1 与 SBC，
+服务顺序为 D-Bus → bluetoothd → bluealsa A2DP Sink → bluealsa-aplay。专有 Wi-Fi/BT/AK7755
+固件不进入仓库，只能经 SHA-256 白名单 manifest 注入。A25 FIT 已在主机解包逐字节比对，尚未
+在 R1 验证普通 ALSA、配对、A2DP 播放或异常收口，不能提前称为可用蓝牙音频系统。
+
 ## 已完成阶段
 
 - 接通并验证 UART，保存完整冷启动日志。
@@ -497,6 +504,7 @@ secure INTID55/APR0 的完整定位和 clean kernel 验证。下一实机步骤�
 11. clean 四核 v9 已用修正后的 INTID55 cleanup SPL 实机通过。白名单救援 v11 的最小-DT A 线四核正常，完整 eMMC DT 的 B1/B2 都只读枚举成功但 CPU1–CPU3 未 online；B2 已否定 arch-timer，C2 又否定 Cortex-A7 814220 单变量。C1 用同一完整 B2 DT/initramfs 换回 multi_v7 v9 后四核与 eMMC 同时通过，现作为外设工作基线；B3 CRU A/B 延后到最小化阶段。
 12. 已从 C1 构建 USB Host A1，但用户确认成品没有可用 USB 外设口，该支线已降级为 SoC/DFU 研究产物；板载 SDIO Wi-Fi、UART Bluetooth（含 BCM4345C0 HCD build 0124、AES/CMAC）均已实机通过。
 13. eMMC A5 常驻开源启动链已经写后读回并冷启动通过；Linux 仍只经 U-Boot DFU 装入 RAM。Linux 6.18.42 Audio A7r2 已把 playback/capture、无线、DMA、DSP、四核和功放安全检查收敛成单命令并实机通过 60 秒共存验证；capture 目前仅见 1-LSB 级活动，真实麦克风/routing 仍待 A/B。不写 eMMC、不解除功放、不播放非零音频。
+14. A23 原厂 DSP 路由已由用户确认低底噪并完成回归。A24 自动功放状态机与 A25 Buildroot/BlueALSA FIT 已完成主机构建、ELF/固件/服务/FIT payload 审计；下一步只做 RAM-only 上板，先验证普通 ALSA START/STOP/close fail-safe，再进行配对和 SBC A2DP Sink 播放，暂不写 eMMC rootfs。
 
 ## 文档导航
 
@@ -611,6 +619,9 @@ secure INTID55/APR0 的完整定位和 clean kernel 验证。下一实机步骤�
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-lineout-selfcheck-a18r2.itb` | Audio A18r2 RAM-only 诊断候选：保留 D4=`F/8/1` 三档 tone+zero 自校验；失败时打印七个寄存器 actual/expected 并 soft-mute/power-down/功放 SAFE，但不再锁死 PDN。14,363,832 B，SHA-256 `f2dc1713fdaec1e73632c33787582c56deb311dc63a8f22ce50ca744463a0240`；三个 FIT payload 已逐字节核验，默认 DFU 已切换，尚待实机。 |
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-lineout-selfcheck-a18r3.itb` | Audio A18r3 RAM-only 修正版：每个新 stream 在 DAC 静音时恢复 D4=`0xf`，自校验 PCM buffer 扩为 16384 frames，避免切档期间约 70 ms 控制停顿造成 xrun。14,363,964 B，SHA-256 `7d2672ffc49c5e0becfcd466e249a4272d6307fb7795086fc4f5a487b7b9eee5`；三个 payload 已逐字节核验，默认 DFU 已切换，尚待实机。 |
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-i2s-clock-a19.itb` | Audio A19 RAM-only I2S clock A/B：逐字节复用 A18r3 kernel/DTB，仅新增 `/bin/r1-i2s-clock-ab`；比较 zero PCM running、PCM DROP 后 clocks stopped、PREPARE 后 running，功放/codec route 与 fail-safe 保持。14,364,660 B，SHA-256 `1bba7b088f3d6ba40c1bce737ead66266786facd4489e513a19c6565f72b7c54`；FIT payload 与工具已逐字节核验，默认 DFU 已切换。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-auto-amp-a24.itb` | A24 救援用户态主机候选：普通 playback PCM 自动控制 PA，capture 不碰 PA，普通 PCM 与诊断 gate 互斥；14,351,240 B，SHA-256 `51271abb0f7404d3f955b1052447ce100bd49155bb36e525fab7028a2c737262`；尚未上板。 |
+| `build/buildroot-r1-bluealsa-6.18/images/rootfs.cpio.gz` | Buildroot 2026.05.1 ARMv7 hard-float/musl 用户态：Linux 6.18.34 headers、D-Bus、BlueZ 5.79、BlueALSA 4.3.1、SBC 与 ALSA；6,956,537 B，SHA-256 `f78f5d12eac1c4524e4deb49b1ab280227415a9034e8be0681f6a48a2b0c7315`；专有固件仅由本地 SHA manifest 注入。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-bluealsa-a25.itb` | A25 RAM-only 主机候选：A24 kernel/DTB + Buildroot BlueALSA rootfs，三个 FIT payload 已抽取逐字节比较；20,281,336 B，SHA-256 `64f2355c83e062305377b14e8bdd79ffa93bb90849f6f0b0532775f30b2de740`；需使用 64 MiB DFU RAM alternate，尚未上板。 |
 
 ## 安全边界
 

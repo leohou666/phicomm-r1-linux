@@ -1,0 +1,3 @@
+# SBC-only A2DP Sink.  Optional codec packages are intentionally absent from
+# the Buildroot defconfig.
+BLUEALSA_ARGS="-p a2dp-sink"

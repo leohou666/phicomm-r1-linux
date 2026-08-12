@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (GPL-2.0-or-later OR MIT)
+
+/*
+ * Phicomm R1 A24: factory data2 DSP route plus automatic PCM amplifier gate.
+ *
+ * The underlying A8 hardware description keeps both TPA3118D2 controls
+ * fail-closed.  A24 changes only the machine-driver ownership policy:
+ * playback owns the gates for its PCM lifecycle, capture never does, and the
+ * root-only diagnostic gate remains exclusive: only its owning process may
+ * open the diagnostic PCM, which bypasses automatic amplifier ownership.
+ */
+
+#include "rk3229-phicomm-r1-open-optee-ak7755-audible-a8.dts"

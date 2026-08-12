@@ -1,0 +1,2 @@
+# No project-specific Kconfig symbols are needed yet.  The R1 configuration
+# intentionally uses packages and options provided by Buildroot 2026.05.1.

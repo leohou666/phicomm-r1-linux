@@ -7079,3 +7079,62 @@ alsa-utils，显式开启 A2DP/AVRCP；先验证 SBC Sink，不同时引入 Pipe
 根据 playback 生命周期自动执行 mute→enable→settle→unmute，并在 STOP、close、错误与关机时
 mute→shutdown。诊断 misc gate 可保留但必须与普通 stream 互斥。A24 与 Buildroot rootfs 都先走
 DFU/RAM-only；配对、播放、暂停、断连、崩溃收口和重连全部通过前，不写 eMMC rootfs。
+
+### Audio A24/A25 主机候选完成（2026-08-12）
+
+A24 machine driver 已实现普通 playback PCM 自动 PA 状态机。START/RESUME/PAUSE_RELEASE
+同步执行 safe→enable→20 ms→unmute；STOP/SUSPEND/PAUSE_PUSH/hw_free/shutdown 同步执行
+mute→10 ms→shutdown。capture 不改变 PA。普通 PCM 与 root-only misc gate 互斥；为了不破坏已有
+诊断工具，持有 gate 的同一 TGID 可打开 diagnostic PCM，但该 PCM 跳过自动 PA。link 使用
+`nonatomic=1`，所有延时都发生在可睡眠 trigger，不采用可能在 STOP 后晚到的 deferred unmute。
+
+主机重建命令固定为 16 jobs：
+
+```sh
+JOBS=16 scripts/build-r1-ak7755-auto-amp-a24.sh
+```
+
+关键对象、整核、DTB、救援 FIT 和三个 FIT payload 均构建/比较通过：
+
+```text
+8a33477f0135f22af647b692f31abb65b9bd7c425d26ac914b2b84467d600504  zImage-mainline-6.18-ak7755-auto-amp-a24
+4078b6aa84190948f9ffc289c6762645effc68c776e233664055c04be3cae2e7  rk3229-phicomm-r1-mainline-6.18-ak7755-auto-amp-a24.dtb
+51271abb0f7404d3f955b1052447ce100bd49155bb36e525fab7028a2c737262  r1-linux-mainline-6.18-ak7755-auto-amp-a24.itb
+```
+
+Buildroot external tree 固定 release archive `2026.05.1`，archive SHA-256 为
+`ae7f706f087b9ae9083a10a587368dfbf53103c28bf81c2d690198dc4090cb58`。首轮完整构建沿用
+Buildroot 默认 Linux 7.0 headers。它虽然成功生成 cpio，但 userspace headers 比目标 kernel
+6.18 新，因此主动判为无效候选，没有封进 A25。修正 defconfig 为
+`BR2_KERNEL_HEADERS_6_18=y` 并换用独立 output directory 后重新构建；最终实际 headers 为
+6.18.34。这个失败说明必须审计 resolved `.config`，不能只看 rootfs 是否成功生成。
+
+专有固件继续只存在于本地备份；以下命令中的 manifest 位于仓库外，逐项记录输入 SHA-256、
+九个允许的目标名和源文件路径：
+
+```sh
+R1_FIRMWARE_MANIFEST=/absolute/path/to/r1-firmware.manifest \
+  JOBS=16 scripts/build-r1-bluealsa-rootfs.sh
+scripts/build-r1-bluealsa-fit-a25.sh
+```
+
+Buildroot 完整构建和 `legal-info` 通过。rootfs 静态审计确认 `/init`、BusyBox init、D-Bus、
+bluetoothd、BlueALSA、bluealsa-aplay、bluetoothctl、SBC、ALSA 和九个 firmware target；四个
+代表性 ELF 都是 ARM32 EABI5 hard-float/musl。服务顺序固定为 S30 D-Bus、S40 bluetoothd、
+S45 `bluealsa -p a2dp-sink`、S50 `bluealsa-aplay -D r1-output`，ALSA plug 转为
+48 kHz/stereo/S16_LE。
+
+收尾阶段遇到两个主机脚本问题，均未影响目标 payload：长构建进程读到了编辑前的残缺摘要行，
+在包和文件系统生成后报 unmatched quote；用修正后的脚本增量执行即成功。A25 校验脚本第一次
+解整个 cpio 时又因普通用户不能 `mknod /dev/console` 失败，现改为只提取并审计白名单 payload，
+从而不需要 root 权限。最终 rootfs/FIT 为：
+
+```text
+f78f5d12eac1c4524e4deb49b1ab280227415a9034e8be0681f6a48a2b0c7315  rootfs.cpio.gz (6,956,537 B)
+64f2355c83e062305377b14e8bdd79ffa93bb90849f6f0b0532775f30b2de740  r1-linux-mainline-6.18-ak7755-bluealsa-a25.itb (20,281,336 B)
+```
+
+A25 的 kernel、ramdisk、DTB 从 FIT 抽取后与源文件逐字节相同。FIT 超过旧 16 MiB DFU RAM
+alternate，故上板时只把 transfer ceiling 扩为 64 MiB；FIT 本身仍在 `0x6a800000`，不触碰
+OP-TEE reservation，也没有任何 eMMC 写操作。以上均为主机验证，普通 ALSA 自动 PA、BlueZ
+配对、SBC A2DP 播放及断连/崩溃收口仍待 R1 实机。

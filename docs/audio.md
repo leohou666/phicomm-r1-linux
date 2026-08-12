@@ -1075,6 +1075,44 @@ e3bfd76b6ded8681dca29988eaf506cd4d4f3c40d6e7ba98f4ca63df11f895cd  phicomm_r1_ak7
 9ce2ed99b338223529761f0039420fd7c5b050710e43f13dbcf2f212752efd2b  r1-linux-mainline-6.18-ak7755-analog-boundary-a16.itb
 ```
 
+### Audio A24/A25：普通 PCM 自动功放与最小 BlueALSA 用户态
+
+A24 把 A23 的 root-only 实验 gate 留作诊断兼容，同时让普通 ALSA playback 自己拥有完整 PA
+生命周期。START、RESUME、PAUSE_RELEASE 在 sleepable machine-link trigger 中同步执行
+safe→enable→等待 20 ms→unmute；STOP、SUSPEND、PAUSE_PUSH、hw_free 和 close 同步执行
+mute→等待 10 ms→shutdown。capture 不控制 PA。普通 PCM 与 misc 诊断 gate 严格互斥；只有持有
+gate 的同一 TGID 能打开用于旧工具的 diagnostic PCM，该 PCM 不重复执行自动 PA。实现设置
+`link.nonatomic=1`，没有可能在 STOP/close 后晚到的异步 unmute。当前结论仅来自源码审计、
+关键对象/整核构建和 FIT 解包，仍需 R1 实机验证 START/STOP/close/kill 的 GPIO 与听感边界。
+
+A25 不再把完整用户态塞入救援 initramfs。`buildroot-external/r1/` 固定 Buildroot 2026.05.1，
+以 Linux 6.18.34 UAPI headers 自建 Cortex-A7 EABI hard-float/musl 工具链，生成 BusyBox SysV
+rootfs，并包含 D-Bus、BlueZ 5.79、BlueALSA 4.3.1、SBC、alsa-lib、alsa-utils 和
+libsamplerate。启动顺序为 D-Bus、bluetoothd、`bluealsa -p a2dp-sink`、
+`bluealsa-aplay -D r1-output 00:00:00:00:00:00`；`r1-output` 把输入统一转换为
+48 kHz/stereo/S16_LE 后送到 `hw:0,0`。第一阶段明确不带 PipeWire、AAC、aptX、LDAC、Opus
+或 HFP。
+
+专有 CYW43455、板级 NVRAM、BCM HCD 与 AK7755 data2 文件没有加入仓库。post-build hook 只接受
+九个白名单目标，并要求外部 manifest 为每个非 symlink 输入提供精确 SHA-256。主机构建已验证
+`/init`、四个服务、三个 BlueZ/BlueALSA 程序、九个 firmware target、ARM32 hard-float ELF，
+并生成 Buildroot `legal-info`。第一次完整构建误用 Buildroot 默认 7.0 headers，虽然能生成 cpio，
+但它比目标 Linux 6.18 更新，不作为候选；改为 `BR2_KERNEL_HEADERS_6_18=y` 后重新从独立 output
+目录构建。该失败说明 rootfs “能编译”不等于 kernel userspace ABI 选择合理。
+
+```text
+8a33477f0135f22af647b692f31abb65b9bd7c425d26ac914b2b84467d600504  A24 zImage
+4078b6aa84190948f9ffc289c6762645effc68c776e233664055c04be3cae2e7  A24 DTB
+51271abb0f7404d3f955b1052447ce100bd49155bb36e525fab7028a2c737262  A24 rescue FIT
+f78f5d12eac1c4524e4deb49b1ab280227415a9034e8be0681f6a48a2b0c7315  A25 rootfs.cpio.gz
+64f2355c83e062305377b14e8bdd79ffa93bb90849f6f0b0532775f30b2de740  A25 FIT
+```
+
+A25 FIT 为 20,281,336 B，超过旧 16 MiB DFU alternate，因此只扩大 RAM transfer ceiling 为
+64 MiB；这不写 eMMC，也不改变常驻 OP-TEE/U-Boot。下一步先 RAM-only 验证普通 ALSA 自动 PA，
+再运行配对 agent 和 SBC A2DP Sink；配对、暂停、断连、播放器崩溃、重连和无线共存通过前，
+不把 rootfs 写入 eMMC。
+
 ## 3. PipeWire DSP
 
 建议创建一个虚拟输出节点：

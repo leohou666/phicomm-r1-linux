@@ -236,8 +236,8 @@
 - [x] 构建 Linux 6.18 Audio A23：codec 改为 12.288 MHz XTI 的 BCLK/LRCK provider、RK I2S2 consumer；增加 data2 OFREG 严格 size/命令头/CRC 校验，并按 A21r5 的 C3/C4、DSP DAC、双 Lineout route 与 RUN 合同逐寄存器验证；首包误选 A4 DT 导致安全 misc 设备缺失，现已改用 A8 fail-safe DT，反编译最终 DTB 确认两个 amp supply，整核/DT/initramfs/FIT 静态验证通过
 - [x] RAM-only 实机运行修正版 A23 低电平听感：`/bin/r1-audible-test` 已实际出声，用户确认“很干净”，A22 固定明显底噪没有复现；本轮未贴退出码/FACTORY DSP/最终 SAFE 日志，故只把听感目标标为完成
 - [x] A23 回归由用户确认“没问题”：按给定链覆盖 60 秒 zero PCM、四核、Wi-Fi、Bluetooth LE 与最终功放安全状态；本轮没有粘贴逐项输出，证据类型保留为用户确认，不伪造具体计数/退出码
-- [ ] A24 普通 ALSA：把实验 misc gate 改为 PCM 生命周期自动 PA 时序，START 后 mute→enable→延时→unmute，STOP/close/xrun/进程退出后 mute→shutdown；保留 fail-closed，不要求普通播放器持有 `/dev/r1-audio-safety`
-- [ ] 建立可复现 ARMv7 Buildroot rootfs：D-Bus、BlueZ（A2DP/AVRCP）、BlueALSA、alsa-lib/alsa-utils、`bluetoothctl`；版本、源码哈希和许可清单固定，不把完整用户态塞进救援 initramfs
+- [x] A24 普通 ALSA 主机候选：PCM lifecycle 已自动控制 PA；START/RESUME/PAUSE_RELEASE 同步 safe→enable→20 ms→unmute，STOP/SUSPEND/PAUSE_PUSH/hw_free/close 同步 mute→10 ms→shutdown；capture 不碰 PA，普通 PCM 与 root-only misc 诊断严格互斥，整核/FIT 解包验证通过，待 RAM-only 实机
+- [x] 建立可复现 ARMv7 Buildroot rootfs：Buildroot 2026.05.1、Linux 6.18.34 UAPI headers、musl、D-Bus、BlueZ 5.79（A2DP/AVRCP）、BlueALSA 4.3.1、SBC、alsa-lib/alsa-utils、`bluetoothctl`；`-j16` 完整构建、ARM hard-float ELF、cpio 内容、严格固件白名单和 `legal-info` 均已主机验证
 - [ ] RAM-only 验证普通 ALSA 与 BlueZ A2DP Sink：配对、连接、`bluealsa-aplay`→`hw:0,0`、暂停/断连/播放器崩溃自动静音、重连、四核和无线共存；通过前不写 rootfs 到 eMMC
 - [ ] 对原厂 Android 音频做同硬件 idle-noise A/B，并从原厂 kernel/module/用户态音频配置提取 AK7755 与 TPA3118 初始化证据；优先核对 Lineout1 输出级、功放增益/输入网络相关设置，不再盲调 PCM 格式
 - [ ] 提取 AK7755 原厂寄存器写序列

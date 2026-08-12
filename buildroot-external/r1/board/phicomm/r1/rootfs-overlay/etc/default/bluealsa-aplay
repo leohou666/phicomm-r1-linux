@@ -1,0 +1,3 @@
+# The all-zero address subscribes to every connected Bluetooth device.
+# r1-output performs the fixed 48 kHz/S16_LE conversion required by AK7755.
+BLUEALSA_APLAY_ARGS="-D r1-output 00:00:00:00:00:00"

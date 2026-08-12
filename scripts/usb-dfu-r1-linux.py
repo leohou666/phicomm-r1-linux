@@ -44,6 +44,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="allow a modified default FIT deliberately",
     )
+    parser.add_argument(
+        "--expect-sha256",
+        metavar="HEX",
+        help="refuse to download unless the selected FIT has this SHA-256",
+    )
     parser.add_argument("--no-notify", action="store_true")
     return parser.parse_args()
 
@@ -54,8 +59,17 @@ def main() -> int:
     if not fit.is_file():
         raise SystemExit(f"Linux FIT does not exist: {fit}")
 
+    actual = sha256(fit)
+    if args.expect_sha256:
+        expected = args.expect_sha256.lower()
+        if len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
+            raise SystemExit("--expect-sha256 must be exactly 64 hexadecimal digits")
+        if actual != expected:
+            raise SystemExit(
+                f"refusing unexpected FIT: SHA-256 {actual}, expected {expected}"
+            )
+
     if fit == DEFAULT_FIT.resolve() and not args.skip_default_hash_check:
-        actual = sha256(fit)
         if actual != DEFAULT_FIT_SHA256:
             raise SystemExit(
                 f"refusing unexpected default FIT: SHA-256 {actual}, "
@@ -67,6 +81,7 @@ def main() -> int:
         raise SystemExit("dfu-util is missing; on Fedora run: sudo dnf install dfu-util")
 
     print(f"Linux FIT: {fit}")
+    print(f"SHA-256: {actual}")
     print("Target: U-Boot DFU alternate 'linux-fit' at RAM 0x6a800000")
     print("Safety: this script has no MMC/storage alternate and does not flash eMMC.")
 

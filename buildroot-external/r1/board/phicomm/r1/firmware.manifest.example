@@ -1,0 +1,18 @@
+# Proprietary files are deliberately absent from this repository.
+#
+# Each non-comment line has exactly three whitespace-separated fields:
+# SHA256  DESTINATION_BELOW_/lib/firmware  ABSOLUTE_OR_RELATIVE_SOURCE_FILE
+#
+# Permitted destinations are:
+# brcm/brcmfmac43455-sdio.bin
+# brcm/brcmfmac43455-sdio.phicomm,r1.txt
+# brcm/brcmfmac43455-sdio.clm_blob
+# brcm/BCM4345C0.hcd
+# regulatory.db
+# regulatory.db.p7s
+# ak7755_pram_data2.bin
+# ak7755_cram_data2.bin
+# ak7755_ofreg_data2.bin
+#
+# Copy this file outside the repository, replace the comments with verified
+# entries, and export R1_FIRMWARE_MANIFEST=/absolute/path/to/manifest.

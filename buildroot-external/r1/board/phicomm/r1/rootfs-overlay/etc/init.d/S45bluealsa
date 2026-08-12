@@ -1,0 +1,39 @@
+#!/bin/sh
+
+DAEMON=bluealsa
+EXEC=/usr/bin/bluealsa
+PIDFILE=/var/run/$DAEMON.pid
+BLUEALSA_ARGS="-p a2dp-sink"
+
+# shellcheck source=/dev/null
+[ -r /etc/default/bluealsa ] && . /etc/default/bluealsa
+
+start() {
+	printf 'Starting %s: ' "$DAEMON"
+	# shellcheck disable=SC2086
+	start-stop-daemon --start --background --make-pidfile \
+		--pidfile "$PIDFILE" --exec "$EXEC" -- $BLUEALSA_ARGS
+	status=$?
+	[ "$status" -eq 0 ] && echo OK || echo FAIL
+	return "$status"
+}
+
+stop() {
+	printf 'Stopping %s: ' "$DAEMON"
+	start-stop-daemon --stop --pidfile "$PIDFILE" --exec "$EXEC"
+	status=$?
+	while start-stop-daemon --stop --test --quiet \
+		--pidfile "$PIDFILE" --exec "$EXEC"; do
+		sleep 0.1
+	done
+	rm -f "$PIDFILE"
+	[ "$status" -eq 0 ] && echo OK || echo FAIL
+	return "$status"
+}
+
+case "${1:-}" in
+	start) start ;;
+	stop) stop ;;
+	restart) stop; start ;;
+	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

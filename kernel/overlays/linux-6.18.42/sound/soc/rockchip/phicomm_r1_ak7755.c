@@ -15,6 +15,7 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
+#include <linux/sched.h>
 #include <linux/workqueue.h>
 
 #include <sound/pcm_params.h>
@@ -57,6 +58,12 @@ struct r1_ak7755_sound {
 	struct mutex safety_lock;
 	struct snd_soc_component *codec_component;
 	atomic_t safety_open;
+	pid_t safety_owner_tgid;
+	unsigned int pcm_open_count;
+	bool playback_open;
+	bool playback_diagnostic;
+	bool playback_active;
+	bool amp_gates_ready;
 	bool amp_enabled;
 	bool amp_unmuted;
 };
@@ -65,6 +72,9 @@ static int r1_audio_force_safe_locked(struct r1_ak7755_sound *sound)
 {
 	int first_error = 0;
 	int ret;
+
+	if (!sound->amp_gates_ready)
+		return 0;
 
 	if (sound->amp_unmuted) {
 		ret = regulator_disable(sound->amp_unmute);
@@ -90,8 +100,46 @@ static int r1_audio_force_safe_locked(struct r1_ak7755_sound *sound)
 			sound->amp_enabled = false;
 		}
 	}
+	sound->playback_active = false;
 
 	return first_error;
+}
+
+static int r1_audio_start_playback_locked(struct r1_ak7755_sound *sound)
+{
+	int ret;
+
+	if (!sound->amp_gates_ready)
+		return 0;
+	if (sound->playback_active)
+		return 0;
+	if (!sound->playback_open || atomic_read(&sound->safety_open))
+		return -EBUSY;
+
+	/* Always begin a new audible interval from the fail-closed state. */
+	ret = r1_audio_force_safe_locked(sound);
+	if (ret)
+		return ret;
+
+	ret = regulator_enable(sound->amp_enable);
+	if (ret)
+		goto err_safe;
+	sound->amp_enabled = true;
+
+	/* Release TPA3118D2 SDZ while MUTE remains asserted. */
+	msleep(20);
+	ret = regulator_enable(sound->amp_unmute);
+	if (ret)
+		goto err_safe;
+	sound->amp_unmuted = true;
+	sound->playback_active = true;
+	dev_info(sound->card.dev,
+		 "PCM playback active: amplifier settled and unmuted\n");
+	return 0;
+
+err_safe:
+	r1_audio_force_safe_locked(sound);
+	return ret;
 }
 
 static void r1_audio_timeout_work(struct work_struct *work)
@@ -123,7 +171,15 @@ static int r1_audio_safety_open(struct inode *inode, struct file *file)
 
 	cancel_delayed_work_sync(&sound->safety_timeout);
 	mutex_lock(&sound->safety_lock);
+	if (sound->pcm_open_count) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
 	ret = r1_audio_force_safe_locked(sound);
+	if (!ret)
+		sound->safety_owner_tgid = current->tgid;
+
+out_unlock:
 	mutex_unlock(&sound->safety_lock);
 	if (ret) {
 		atomic_set(&sound->safety_open, 0);
@@ -242,6 +298,7 @@ static int r1_audio_safety_release(struct inode *inode, struct file *file)
 	cancel_delayed_work_sync(&sound->safety_timeout);
 	mutex_lock(&sound->safety_lock);
 	r1_audio_force_safe_locked(sound);
+	sound->safety_owner_tgid = 0;
 	mutex_unlock(&sound->safety_lock);
 	atomic_set(&sound->safety_open, 0);
 
@@ -303,8 +360,131 @@ static int r1_ak7755_hw_params(struct snd_pcm_substream *substream,
 	return r1_ak7755_set_clock_contract(rtd);
 }
 
+static int r1_ak7755_startup(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct r1_ak7755_sound *sound = snd_soc_card_get_drvdata(rtd->card);
+	int ret = 0;
+
+	mutex_lock(&sound->safety_lock);
+	if (atomic_read(&sound->safety_open) &&
+	    sound->safety_owner_tgid != current->tgid) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		if (sound->playback_open) {
+			ret = -EBUSY;
+			goto out_unlock;
+		}
+		sound->playback_open = true;
+		sound->playback_diagnostic = atomic_read(&sound->safety_open);
+	}
+	sound->pcm_open_count++;
+
+out_unlock:
+	mutex_unlock(&sound->safety_lock);
+	return ret;
+}
+
+static int r1_ak7755_prepare(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct r1_ak7755_sound *sound = snd_soc_card_get_drvdata(rtd->card);
+	int ret = 0;
+
+	if (substream->stream != SNDRV_PCM_STREAM_PLAYBACK)
+		return 0;
+
+	mutex_lock(&sound->safety_lock);
+	if (sound->playback_diagnostic)
+		ret = 0;
+	else if (atomic_read(&sound->safety_open))
+		ret = -EBUSY;
+	else
+		ret = r1_audio_force_safe_locked(sound);
+	mutex_unlock(&sound->safety_lock);
+	return ret;
+}
+
+static int r1_ak7755_trigger(struct snd_pcm_substream *substream, int cmd)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct r1_ak7755_sound *sound = snd_soc_card_get_drvdata(rtd->card);
+	int ret = 0;
+
+	if (substream->stream != SNDRV_PCM_STREAM_PLAYBACK)
+		return 0;
+
+	mutex_lock(&sound->safety_lock);
+	if (sound->playback_diagnostic)
+		goto out_unlock;
+	switch (cmd) {
+	case SNDRV_PCM_TRIGGER_START:
+	case SNDRV_PCM_TRIGGER_RESUME:
+	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+		ret = r1_audio_start_playback_locked(sound);
+		break;
+	case SNDRV_PCM_TRIGGER_STOP:
+	case SNDRV_PCM_TRIGGER_SUSPEND:
+	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+		ret = r1_audio_force_safe_locked(sound);
+		if (!ret)
+			dev_info(sound->card.dev,
+				 "PCM playback stopped: mute+shutdown asserted\n");
+		break;
+	default:
+		ret = -EINVAL;
+		break;
+	}
+
+out_unlock:
+	mutex_unlock(&sound->safety_lock);
+	return ret;
+}
+
+static int r1_ak7755_hw_free(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct r1_ak7755_sound *sound = snd_soc_card_get_drvdata(rtd->card);
+	int ret = 0;
+
+	if (substream->stream != SNDRV_PCM_STREAM_PLAYBACK)
+		return 0;
+	mutex_lock(&sound->safety_lock);
+	if (!sound->playback_diagnostic)
+		ret = r1_audio_force_safe_locked(sound);
+	mutex_unlock(&sound->safety_lock);
+	return ret;
+}
+
+static void r1_ak7755_pcm_shutdown(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct r1_ak7755_sound *sound = snd_soc_card_get_drvdata(rtd->card);
+
+	mutex_lock(&sound->safety_lock);
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		if (!sound->playback_diagnostic)
+			r1_audio_force_safe_locked(sound);
+		sound->playback_open = false;
+		sound->playback_diagnostic = false;
+	}
+	if (WARN_ON(!sound->pcm_open_count))
+		goto out_unlock;
+	sound->pcm_open_count--;
+
+out_unlock:
+	mutex_unlock(&sound->safety_lock);
+}
+
 static const struct snd_soc_ops r1_ak7755_ops = {
+	.startup = r1_ak7755_startup,
+	.shutdown = r1_ak7755_pcm_shutdown,
 	.hw_params = r1_ak7755_hw_params,
+	.hw_free = r1_ak7755_hw_free,
+	.prepare = r1_ak7755_prepare,
+	.trigger = r1_ak7755_trigger,
 };
 
 static void r1_ak7755_put_of_nodes(void *data)
@@ -356,6 +536,8 @@ static int r1_ak7755_probe(struct platform_device *pdev)
 	sound->link.num_platforms = 1;
 	sound->link.init = r1_ak7755_link_init;
 	sound->link.ops = &r1_ak7755_ops;
+	/* trigger() uses regulators and msleep(), so ALSA must call it sleepably. */
+	sound->link.nonatomic = 1;
 	sound->link.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
 				     SND_SOC_DAIFMT_CBP_CFP;
 
@@ -366,27 +548,37 @@ static int r1_ak7755_probe(struct platform_device *pdev)
 	sound->card.num_links = 1;
 	platform_set_drvdata(pdev, sound);
 	snd_soc_card_set_drvdata(&sound->card, sound);
+	mutex_init(&sound->safety_lock);
+	atomic_set(&sound->safety_open, 0);
+	INIT_DELAYED_WORK(&sound->safety_timeout, r1_audio_timeout_work);
+
+	sound->amp_enable = devm_regulator_get_optional(dev, "amp-enable");
+	if (IS_ERR(sound->amp_enable)) {
+		if (PTR_ERR(sound->amp_enable) == -ENODEV) {
+			sound->amp_enable = NULL;
+			sound->amp_unmute = NULL;
+		} else {
+			return dev_err_probe(dev, PTR_ERR(sound->amp_enable),
+					     "failed to get amplifier-enable gate\n");
+		}
+	} else {
+		sound->amp_unmute = devm_regulator_get(dev, "amp-unmute");
+		if (IS_ERR(sound->amp_unmute))
+			return dev_err_probe(dev, PTR_ERR(sound->amp_unmute),
+					     "failed to get amplifier-unmute gate\n");
+		sound->amp_gates_ready = true;
+	}
 
 	ret = devm_snd_soc_register_card(dev, &sound->card);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to register sound card\n");
 
-	sound->amp_enable = devm_regulator_get_optional(dev, "amp-enable");
-	if (IS_ERR(sound->amp_enable)) {
-		if (PTR_ERR(sound->amp_enable) == -ENODEV)
-			return 0;
-		return dev_err_probe(dev, PTR_ERR(sound->amp_enable),
-				     "failed to get amplifier-enable gate\n");
+	if (!sound->amp_gates_ready) {
+		dev_warn(dev,
+			 "amplifier gates absent; automatic playback control disabled\n");
+		return 0;
 	}
 
-	sound->amp_unmute = devm_regulator_get(dev, "amp-unmute");
-	if (IS_ERR(sound->amp_unmute))
-		return dev_err_probe(dev, PTR_ERR(sound->amp_unmute),
-				     "failed to get amplifier-unmute gate\n");
-
-	mutex_init(&sound->safety_lock);
-	atomic_set(&sound->safety_open, 0);
-	INIT_DELAYED_WORK(&sound->safety_timeout, r1_audio_timeout_work);
 	sound->safety_misc.minor = MISC_DYNAMIC_MINOR;
 	sound->safety_misc.name = "r1-audio-safety";
 	sound->safety_misc.fops = &r1_audio_safety_fops;
@@ -399,7 +591,7 @@ static int r1_ak7755_probe(struct platform_device *pdev)
 				     "failed to register audible-test safety gate\n");
 
 	dev_info(dev,
-		 "audible-test safety gate ready: default mute+shutdown\n");
+		 "automatic PCM amplifier control and exclusive audible-test gate ready; default mute+shutdown\n");
 
 	return 0;
 }
