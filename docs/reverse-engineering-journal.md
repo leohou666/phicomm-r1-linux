@@ -5385,3 +5385,88 @@ A4 的 card/PCM、DAI contract、pinmux、clock rate、功放安全状态和四�
 完成，全程未打开 PCM、未播放、未写 eMMC。本轮没有贴出 A4 自身的 `/proc/uptime`、Wi-Fi
 scan、Bluetooth LE scan 或 IPI 增长，故只把它们记录为待补回归；不能用 A3 的 >30 秒与
 无线成功替代本版证据。
+
+## Audio A5 全零 PCM clock/DMA 工具主机候选（2026-08-12）
+
+用户明确要求先不补 A4 回归，优先添加工具。新增 freestanding ARM 工具
+`r1-pcm-clock-test`，不用 alsa-lib，直接调用 ALSA PCM UAPI。为避免 ABI 猜错，源码在编译期
+断言 ARM `struct snd_pcm_hw_params` 为 604 bytes，对应 ioctl `0xc25c4110/11`。参数被硬限制为
+RW interleaved、48 kHz、双声道、S16_LE、1024-frame period、4 periods/4096-frame buffer；
+payload 是静态零缓冲。默认持续 20 秒，输入限制 1–120 秒；EPIPE 会计数并 prepare，任何
+其他错误立即 drop/close，xrun 非零时最终返回失败。
+
+构建与打包命令：
+
+```sh
+scripts/build-r1-pcm-clock-test.sh
+
+R1_WIFI_FIRMWARE=1 R1_WIFI_REGULATORY=1 R1_BLUETOOTH_FIRMWARE=1 \
+R1_WIFI_SCAN_TOOL=build/artifacts/r1-nl80211-scan \
+R1_BLUETOOTH_MGMT_TOOL=build/artifacts/r1-btmgmt R1_AK7755_FIRMWARE=1 \
+R1_PCM_CLOCK_TEST_TOOL=build/artifacts/r1-pcm-clock-test \
+INITRAMFS_ARTIFACT_TAG=mainline-6.18-ak7755-pcm-clock-a5 \
+scripts/build-initramfs.sh
+
+mkimage -f scripts/r1-linux-mainline-6.18-ak7755-pcm-clock-a5.its \
+  build/artifacts/r1-linux-mainline-6.18-ak7755-pcm-clock-a5.itb
+```
+
+工具为 7,468-byte ELF32 little-endian ARM EABI5 static executable，符号表只有 ELF 0 号 UND，
+没有运行时未解析符号。initramfs 清单确认含 `bin/r1-pcm-clock-test`、无线工具和 AK7755
+firmware。FIT 14,340,996 bytes，低于 16 MiB DFU RAM alternate；三个 payload 经 dumpimage
+抽出并分别 `cmp` 一致。SHA-256：
+
+```text
+f36d959d82dab252a7ad9d1e415b015e77b6b3eb37256e6cfc9bc50028b4cd91  build/artifacts/r1-pcm-clock-test
+d624e87edbd1a124283d7ba31169b2847f62cf924a719ac6a4129419560c82c3  build/artifacts/r1-initramfs-mainline-6.18-ak7755-pcm-clock-a5.cpio.gz
+bb59d10590d9c61add007a34c55c275766d8ea199df80759df4aea79305771f1  build/artifacts/r1-linux-mainline-6.18-ak7755-pcm-clock-a5.itb
+```
+
+A5 未修改已验证的 A4 kernel/DT，DSP 仍 stopped，功放仍由 shutdown+mute 安全链托管。当前
+只完成主机构建和封装，不把 PCM 参数协商、DMA、运行态 clock gate 或 xrun 提前标为成功。
+实机顺序必须是安全 GPIO 前检、后台零流、运行中 clock/IRQ/error 观测、安全 GPIO后检；
+禁止非零 PCM，仍不写 eMMC。
+
+## Audio A5 RAM-only 全零 PCM 验证通过（2026-08-12）
+
+用户从 A5 FIT 进入 shell 后执行：
+
+```sh
+/bin/r1-pcm-clock-test 30 &
+/bin/busybox sleep 2
+/bin/busybox grep -Ei 'i2s2|sclk_i2s2|hclk_i2s2' /sys/kernel/debug/clk/clk_summary
+/bin/busybox grep -Ei 'dma|i2s|100e0000' /proc/interrupts
+```
+
+工具协商到固定的 48 kHz、双声道、S16_LE、RW_INTERLEAVED、1024-frame period 和
+4096-frame buffer，并报告 `zero_stream_seconds=30 state=running`。运行中 `i2s2_src`、
+`i2s2_frac`、`i2s2_pre`、`sclk_i2s2` 的 enable/prepare 均为 1，后三者为 12.288 MHz；
+PL330 `110f0000.dma-controller` IRQ 32 观察到 901 次。这里记录的是运行时活动快照，未在同一
+输出中保存启动前 IRQ 基线，因此不把 901 写成精确增量，但结合 stream 正常完成足以证明
+PCM DMA 链实际工作。
+
+30 秒后工具输出：
+
+```text
+zero_stream_complete xruns=0
+```
+
+结束后的 clock summary 显示 `i2s2_src`、`i2s2_frac`、`i2s2_pre`、`sclk_i2s2` 的
+enable/prepare 均回到 0，`hclk_i2s2_2ch` 仍为 1；这符合 stream clock runtime gate 关闭、
+controller bus clock 保持的预期。过滤 dmesg 没有发现 PCM/I2S/DMA xrun、underrun、timeout
+或新错误。日志中的 cpufreq `-19`、UART DMA request 和 brcmfmac board-specific firmware
+首次查找 `-2` 均是此前已知且不阻塞相应功能的提示，不归因于 A5。
+
+用户随后重复执行安全检查：
+
+```sh
+/bin/busybox grep -Ei 'amp|shutdown|mute' /sys/kernel/debug/gpio
+/bin/busybox grep -A3 -B3 -Ei 'amp_shutdown_safe|amp_mute_safe' \
+  /sys/kernel/debug/regulator/regulator_summary
+```
+
+结果仍为 AK7755 `shutdown` high、功放 shutdown physical low/ACTIVE_LOW、功放 mute high，
+并保留 `amp_shutdown_safe -> amp_mute_safe -> 1-0019-safe` dependency。由此 A5 的正式结论是：
+R1 上 ALSA PCM 参数协商、I2S2 stream clocks、PL330 DMA 和无 xrun 的 30 秒全零传输均通过，
+且退出后的时钟与功放 fail-closed 状态正确恢复。本次没有解除功放、没有发送非零样本，DSP
+仍 stopped；不能据此声称扬声器可播放、AK7755 DSP routing 正确或外部 BCLK/LRCK 波形已测量。

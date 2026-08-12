@@ -1,0 +1,49 @@
+/dts-v1/;
+
+/ {
+	description = "Phicomm R1 Linux 6.18 AK7755 zero-PCM clock A5";
+	#address-cells = <1>;
+
+	images {
+		kernel-1 {
+			description = "Linux 6.18.42 R1 AK7755 safe DAI A4 kernel";
+			data = /incbin/("../build/artifacts/zImage-mainline-6.18-ak7755-dai-a4");
+			type = "kernel";
+			arch = "arm";
+			os = "linux";
+			compression = "none";
+			load = <0x62000000>;
+			entry = <0x62000000>;
+			hash-1 { algo = "sha256"; };
+		};
+
+		ramdisk-1 {
+			description = "R1 rescue initramfs with zero-PCM clock test";
+			data = /incbin/("../build/artifacts/r1-initramfs-mainline-6.18-ak7755-pcm-clock-a5.cpio.gz");
+			type = "ramdisk";
+			arch = "arm";
+			os = "linux";
+			compression = "gzip";
+			hash-1 { algo = "sha256"; };
+		};
+
+		fdt-1 {
+			description = "Phicomm R1 AK7755 safe ASoC DAI A4 DTB";
+			data = /incbin/("../build/artifacts/rk3229-phicomm-r1-mainline-6.18-ak7755-dai-a4.dtb");
+			type = "flat_dt";
+			arch = "arm";
+			compression = "none";
+			hash-1 { algo = "sha256"; };
+		};
+	};
+
+	configurations {
+		default = "config-1";
+		config-1 {
+			description = "R1 Linux 6.18 AK7755 zero-PCM clock A5";
+			kernel = "kernel-1";
+			ramdisk = "ramdisk-1";
+			fdt = "fdt-1";
+		};
+	};
+};

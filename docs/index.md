@@ -210,6 +210,16 @@ pinmux、12.288 MHz clock rate、功放 shutdown+mute 以及 CPU0-3 online 均�
 PCM stream 时 `sclk_i2s2` 被 gate、`hclk_i2s2_2ch` 保持工作，这是预期 idle 状态，不代表
 时钟失败。本轮没有贴出 A4 自身的 uptime >30 s 或无线扫描结果，故这些仍列为待补回归，
 不借用 A3 证据，也仍禁止播放声音。
+按用户决定先跳过该回归，Audio A5 现已加入 7,468-byte freestanding
+`r1-pcm-clock-test`。它直接使用 ARM ALSA PCM ioctl ABI，固定 48 kHz/stereo/S16、1024-frame
+period、4096-frame buffer，只向 playback 写全零，默认 20 秒且限制最长 120 秒；DSP 和功放
+状态完全沿用 A4。新 FIT 为 `r1-linux-mainline-6.18-ak7755-pcm-clock-a5.itb`，SHA-256
+`bb59d10590d9c61add007a34c55c275766d8ea199df80759df4aea79305771f1`，三个 payload 已抽取逐字节
+核对。默认 DFU 脚本已切换并锁定该哈希。A5 随后在 RAM-only 实机连续写零 30 秒并以
+`zero_stream_complete xruns=0` 结束；运行中 I2S2 12.288 MHz 时钟 gate 打开，PL330 DMA
+IRQ 32 有活动，结束后 stream clocks 回落。测试后 GPIO 和 regulator 两条证据再次确认
+AK7755 仍工作、TPA3118D2 仍 shutdown+mute。该结果验证 ALSA→I2S2→DMA 的无声数字链，
+不等同于 DSP 已运行或扬声器播放成功；继续禁止非零数据和解除功放。
 原厂 data2 二进制没有公开再分发许可，仍只留在 `backup/` 和本地生成的 initramfs，不能
 提交公开仓库。
 
@@ -415,6 +425,7 @@ secure INTID55/APR0 的完整定位和 clean kernel 验证。下一实机步骤�
 | `build/artifacts/mainline-first-shell-20260805.log` | 主线 Linux 6.18.42 首次进入救援 shell 的完整串口日志 |
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-fw-a3.itb` | 已实机通过的 RAM-only Audio A3：Linux 6.18.42、四核/无线回归配置、无 DAI 的 AK7755 ID + PRAM/CRAM 严格 CRC verifier；13.7 MiB，SHA-256 `3b5a4d788f7f66ab57c5dfc62d554b89754594c5a8473be2aff82a63a8e4679f` |
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-dai-a4.itb` | 已实机通过 Audio A4 核心链：AK7755 + I2S2 + 专用 machine card，固定 48 kHz/stereo/S16/32fs，card/PCM/pinmux/clock/safe GPIO/四核在线已验证；DSP stopped、功放 shutdown+mute、禁止播放。14,339,592 B，SHA-256 `245e705f07ad5d0ed585ad91e2a3b9c3379e199ca54205cba7bc7aa75ef32ba5`；A4 自身 >30 s 与无线回归待补。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-pcm-clock-a5.itb` | 已实机通过 Audio A5：复用 A4 kernel/DTB，只在 initramfs 加入全零 PCM clock/DMA 工具；30 秒 48 kHz/stereo/S16 零流 `xruns=0`，运行态时钟和 PL330 DMA IRQ 已验证，结束后时钟回落且功放保持 shutdown+mute。14,340,996 B，SHA-256 `bb59d10590d9c61add007a34c55c275766d8ea199df80759df4aea79305771f1`；禁止非零 PCM。 |
 
 ## 安全边界
 

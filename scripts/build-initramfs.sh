@@ -12,6 +12,7 @@ brcm43455_clm_source=${R1_BRCM43455_CLM_BLOB:-/usr/lib/firmware/brcm/brcmfmac434
 wifi_scan_tool=${R1_WIFI_SCAN_TOOL:-}
 bluetooth_mgmt_tool=${R1_BLUETOOTH_MGMT_TOOL:-}
 ak7755_id_tool=${R1_AK7755_ID_TOOL:-}
+pcm_clock_test_tool=${R1_PCM_CLOCK_TEST_TOOL:-}
 include_ak7755_firmware=${R1_AK7755_FIRMWARE:-0}
 artifact_tag=${INITRAMFS_ARTIFACT_TAG:-}
 artifacts="$project_root/build/artifacts"
@@ -152,6 +153,22 @@ if [ -n "$ak7755_id_tool" ]; then
 		exit 1
 	fi
 	install -m 0755 "$ak7755_id_tool" "$rootfs/bin/r1-ak7755-id"
+fi
+
+if [ -n "$pcm_clock_test_tool" ]; then
+	[ -x "$pcm_clock_test_tool" ] || {
+		printf 'PCM clock test tool is missing or not executable: %s\n' \
+			"$pcm_clock_test_tool" >&2
+		exit 1
+	}
+	if ! file "$pcm_clock_test_tool" | grep -q \
+		'ELF 32-bit.*ARM.*statically linked'; then
+		printf 'PCM clock test tool must be a static 32-bit ARM ELF: %s\n' \
+			"$pcm_clock_test_tool" >&2
+		exit 1
+	fi
+	install -m 0755 "$pcm_clock_test_tool" \
+		"$rootfs/bin/r1-pcm-clock-test"
 fi
 
 if [ "$include_ak7755_firmware" = 1 ]; then

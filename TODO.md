@@ -171,6 +171,8 @@
 - [x] 设计并构建 Audio A4 主机候选：功放继续 shutdown+mute；AK7755 DAI、RK3229 I2S2 与最小 machine card 固定为 48 kHz/stereo/S16/32fs，只验证 ALSA 枚举和时钟，不播放音频
 - [x] RAM-only 实机验证 Audio A4 核心链：`RK_AK7755` card/PCM、I2S2 四针 pinmux、12.288 MHz 内部 clock contract、功放 shutdown+mute 和 CPU0-3 online；未打开 PCM、禁止播放
 - [ ] 补充 Audio A4 稳定性/无线回归证据：本版 `/proc/uptime` >30 s、Wi-Fi scan、Bluetooth LE scan 和四核 IPI 增长（A3 已通过这些项目，但不能替代 A4 证据）
+- [x] 构建 Audio A5 主机候选：新增无 alsa-lib 的静态 `r1-pcm-clock-test`，仅允许 48 kHz/stereo/S16 全零 playback，保持 DSP stopped 和功放 shutdown+mute
+- [x] RAM-only 实机验证 Audio A5：48 kHz/stereo/S16 全零 playback 连续 30 秒，`xruns=0`；运行中 `sclk_i2s2` gate 打开且 PL330 DMA IRQ 活动，结束后时钟回落，功放仍保持 shutdown+mute
 - [ ] 提取 AK7755 原厂寄存器写序列
 - [ ] 提取 PRAM/CRAM/OFREG/ACRAM 数据
 - [ ] 移植 AK7755 ASoC driver

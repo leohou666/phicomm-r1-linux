@@ -259,6 +259,40 @@ A4 核心验收已通过。由于本轮没有提供 A4 自身的 `/proc/uptime`�
 scan 或四核 IPI 增长输出，稳定性与无线回归仍保持为显式待办；A3 的成功不能代替 A4 证据。
 继续禁止打开 PCM 或进行播放/capture，下一音频阶段应先设计无声时钟/数据线观测方案。
 
+### Audio A5：全零 PCM 时钟/DMA 验证
+
+用户决定暂不补 A4 的稳定性/无线回归，先进入不出声的 PCM 链路验证。新增
+`tools/r1-pcm-clock-test.c`：这是 7,468-byte ARM EABI5 freestanding static ELF，不依赖
+alsa-lib 或动态加载器。工具在编译期断言 ARM `snd_pcm_hw_params` ABI 为 604 bytes，只打开
+`/dev/snd/pcmC0D0p`，将硬件参数限制为 RW_INTERLEAVED、48 kHz、stereo、S16_LE、1024-frame
+period 和 4096-frame buffer，然后持续写全零。默认 20 秒，可指定 1–120 秒；xrun 会恢复、
+计数并最终返回失败，其他 ioctl/write 错误立即停止，正常或错误退出都会 drop/close stream。
+
+A5 没有修改 A4 kernel、DT、codec firmware、DSP 状态或功放 GPIO。主机侧确认工具是 ELF32
+little-endian ARM static executable、无运行时未解析符号；initramfs 同时包含该工具、Wi-Fi/BT
+工具和两份 AK7755 firmware。FIT 三个 component 抽出后与 A4 kernel、A5 initramfs、A4 DTB
+逐字节一致：
+
+```text
+f36d959d82dab252a7ad9d1e415b015e77b6b3eb37256e6cfc9bc50028b4cd91  r1-pcm-clock-test
+d624e87edbd1a124283d7ba31169b2847f62cf924a719ac6a4129419560c82c3  r1-initramfs-mainline-6.18-ak7755-pcm-clock-a5.cpio.gz
+bb59d10590d9c61add007a34c55c275766d8ea199df80759df4aea79305771f1  r1-linux-mainline-6.18-ak7755-pcm-clock-a5.itb
+```
+
+A5 已在 RAM-only 实机通过。`/bin/r1-pcm-clock-test 30` 以 48 kHz/stereo/S16_LE、1024-frame
+period、4096-frame buffer 连续写零 30 秒，最后输出 `zero_stream_complete xruns=0`。运行期间
+`i2s2_src`、`i2s2_frac`、`i2s2_pre` 和 `sclk_i2s2` 的 enable/prepare 计数均为 1，后三级
+rate 为 12.288 MHz；PL330 `110f0000.dma-controller` IRQ 32 观察到 901 次。结束后四级
+stream clock 的 enable/prepare 均回到 0，说明 runtime gate 能正确打开和关闭；
+`hclk_i2s2_2ch` 继续保持 1 是 controller bus clock 的预期状态。
+
+测试后的 debugfs 仍显示 AK7755 `shutdown` high、功放 shutdown physical low/ACTIVE_LOW、
+功放 mute high；regulator summary 仍为
+`amp_shutdown_safe -> amp_mute_safe -> 1-0019-safe`。内核日志没有 PCM/I2S/DMA xrun、
+underrun、timeout 或新错误。这里“playback”仅指 ALSA→I2S2→DMA 的数据方向；全零样本、
+DSP stopped 和功放 shutdown+mute 使本次不是扬声器声音验证，也没有证明外部 BCLK/LRCK
+波形或 AK7755 DSP routing。下一阶段仍应保持功放关闭，先建立 DSP start/routing 的可回退边界。
+
 ## 3. PipeWire DSP
 
 建议创建一个虚拟输出节点：
