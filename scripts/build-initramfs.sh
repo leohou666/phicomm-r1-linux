@@ -13,6 +13,8 @@ wifi_scan_tool=${R1_WIFI_SCAN_TOOL:-}
 bluetooth_mgmt_tool=${R1_BLUETOOTH_MGMT_TOOL:-}
 ak7755_id_tool=${R1_AK7755_ID_TOOL:-}
 pcm_clock_test_tool=${R1_PCM_CLOCK_TEST_TOOL:-}
+pcm_capture_test_tool=${R1_PCM_CAPTURE_TEST_TOOL:-}
+audio_soak_tool=${R1_AUDIO_SOAK_TOOL:-}
 include_ak7755_firmware=${R1_AK7755_FIRMWARE:-0}
 artifact_tag=${INITRAMFS_ARTIFACT_TAG:-}
 artifacts="$project_root/build/artifacts"
@@ -169,6 +171,31 @@ if [ -n "$pcm_clock_test_tool" ]; then
 	fi
 	install -m 0755 "$pcm_clock_test_tool" \
 		"$rootfs/bin/r1-pcm-clock-test"
+fi
+
+if [ -n "$pcm_capture_test_tool" ]; then
+	[ -x "$pcm_capture_test_tool" ] || {
+		printf 'PCM capture test tool is missing or not executable: %s\n' \
+			"$pcm_capture_test_tool" >&2
+		exit 1
+	}
+	if ! file "$pcm_capture_test_tool" | grep -q \
+		'ELF 32-bit.*ARM.*statically linked'; then
+		printf 'PCM capture test tool must be a static 32-bit ARM ELF: %s\n' \
+			"$pcm_capture_test_tool" >&2
+		exit 1
+	fi
+	install -m 0755 "$pcm_capture_test_tool" \
+		"$rootfs/bin/r1-pcm-capture-test"
+fi
+
+if [ -n "$audio_soak_tool" ]; then
+	[ -x "$audio_soak_tool" ] || {
+		printf 'Audio soak tool is missing or not executable: %s\n' \
+			"$audio_soak_tool" >&2
+		exit 1
+	}
+	install -m 0755 "$audio_soak_tool" "$rootfs/bin/r1-audio-soak"
 fi
 
 if [ "$include_ak7755_firmware" = 1 ]; then

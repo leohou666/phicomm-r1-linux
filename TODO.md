@@ -175,6 +175,8 @@
 - [x] RAM-only 实机验证 Audio A5：48 kHz/stereo/S16 全零 playback 连续 30 秒，`xruns=0`；运行中 `sclk_i2s2` gate 打开且 PL330 DMA IRQ 活动，结束后时钟回落，功放仍保持 shutdown+mute
 - [x] 构建 Audio A6 主机候选：按 AKM GPL 状态机在 PCM prepare 时依次释放 CKRESETN、CRESETN/DSPRESETN，最后关闭 PCM 时回到 STANDBY；RUN/STANDBY 均读回 C1/CF，任一验证失败均断言 AK7755 reset，功放仍无解除路径
 - [x] RAM-only 实机验证 Audio A6：功放前后均为 shutdown+mute；10 秒全零 PCM 得到 RUN `C1=0x21/CF=0x0c`、STANDBY `C1=0x21/CF=0x00`、`xruns=0` 和退出码 0
+- [x] 构建 Audio A7 主机候选：新增不保存原始 PCM 的静态 capture 统计工具和单命令 60 秒并发验证链，覆盖零 playback、capture、DSP、PL330 DMA、四核、Wi-Fi/蓝牙共存及功放前后安全状态
+- [x] RAM-only 实机运行 Audio A7r2 `/bin/r1-audio-soak 60`：playback/capture 均无 xrun，DMA IRQ `+5622`，DSP RUN/STANDBY 成对，CPU0-3 与四核 IPI 正常，Wi-Fi/BR-EDR/LE 分别扫描到 31/1/18 项，功放前后保持 shutdown+mute，最终 `AUDIO_SOAK_PASS`；capture 仅为两路 peak=1 LSB，麦克风/routing 仍未证明
 - [ ] 提取 AK7755 原厂寄存器写序列
 - [ ] 提取 PRAM/CRAM/OFREG/ACRAM 数据
 - [ ] 移植 AK7755 ASoC driver

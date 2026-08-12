@@ -5569,3 +5569,108 @@ CRESETN/DSPRESETN bits 3/2 均释放，最后关闭 PCM 后 `CF=0x00` 验证两�
 board-specific firmware 首次查找 `-2` 均为既有非阻塞提示，本轮没有新增音频错误。尚未验证
 的是 data2 算法 routing、DAC/ADC 模拟路径、外部波形、声道映射和扬声器输出；下一阶段必须
 先设计受控 mute/unmute 与低幅测试，不能从本结果直接跳到普通音频播放。
+
+## 2026-08-12：Audio A7 单命令并发 soak 主机候选
+
+### 目的与安全边界
+
+用户希望把此前分散的手工观测合并成较长的一条验证链。A7 保持 A6 kernel driver 与 A4 DT
+不变，功放继续没有 unmute/enable 接口，playback 继续只能发送全零。新增 capture 方向只在
+内存中计算统计，既不保存原始 PCM，也不输出样本。该阶段目标是一次覆盖 PCM 双向活动、DSP
+状态、DMA、四核和无线共存；不是扬声器播放或音质测试。
+
+### 实现
+
+- `tools/r1-pcm-capture-test.c`：freestanding ARM ALSA capture 工具，固定 48 kHz、stereo、
+  S16_LE、1024/4096 frames；输出左右声道 nonzero、peak 与近似 RMS；xrun 或双声道全零失败。
+- `initramfs/r1-audio-soak`：默认 60 秒并发启动全零 playback/capture；在 PCM 活动期间执行
+  Wi-Fi、BR/EDR、LE scan；前后核对功放安全 GPIO，并检查四核、PL330 IRQ、DSP RUN/STANDBY
+  和错误日志。所有长操作都有 timeout，信号 trap 会杀掉 PCM 子进程。
+- `scripts/build-initramfs.sh` 新增两个显式输入，只有工具存在且 ELF 静态 ARM 审计通过才打包。
+- A7 只用 localversion fragment 区分内核，DTB 与 A4/A6 相同。
+
+可复现主机构建命令：
+
+```sh
+scripts/build-r1-pcm-capture-test.sh
+
+KERNEL_BUILD=build/kernel-6.18-ak7755-audio-soak-a7 \
+KERNEL_EXTRA_FRAGMENTS='kernel/config/r1-5.10-clean-4core.fragment kernel/config/r1-5.10-wifi-brcmfmac-a2.fragment kernel/config/r1-5.10-wifi-regulatory-a3.fragment kernel/config/r1-5.10-bt-rk805-clkout.fragment kernel/config/r1-5.10-bt-serdev-a1r6.fragment kernel/config/r1-5.10-bt-crypto-a1r9.fragment kernel/config/r1-6.18-ak7755-fw-a3.fragment kernel/config/r1-6.18-ak7755-dai-a4.fragment kernel/config/r1-6.18-ak7755-dsp-run-a6.fragment kernel/config/r1-6.18-ak7755-audio-soak-a7.fragment' \
+BOARD_DTS=kernel/dts/rk3229-phicomm-r1-open-optee-ak7755-dai-a4.dts \
+KERNEL_ARTIFACT_TAG=mainline-6.18-ak7755-audio-soak-a7 \
+scripts/build-kernel.sh
+
+R1_WIFI_FIRMWARE=1 R1_WIFI_REGULATORY=1 R1_BLUETOOTH_FIRMWARE=1 \
+R1_WIFI_SCAN_TOOL=build/artifacts/r1-nl80211-scan \
+R1_BLUETOOTH_MGMT_TOOL=build/artifacts/r1-btmgmt R1_AK7755_FIRMWARE=1 \
+R1_PCM_CLOCK_TEST_TOOL=build/artifacts/r1-pcm-clock-test \
+R1_PCM_CAPTURE_TEST_TOOL=build/artifacts/r1-pcm-capture-test \
+R1_AUDIO_SOAK_TOOL=initramfs/r1-audio-soak \
+INITRAMFS_ARTIFACT_TAG=mainline-6.18-ak7755-audio-soak-a7 \
+scripts/build-initramfs.sh
+
+mkimage -f scripts/r1-linux-mainline-6.18-ak7755-audio-soak-a7.its \
+  build/artifacts/r1-linux-mainline-6.18-ak7755-audio-soak-a7.itb
+```
+
+### 主机验证结果
+
+完整 multi_v7 内核和 DT 编译成功；A7 config 仍将 SMP/PSCI、brcmfmac、BCM HCI UART、
+AES/CMAC、Rockchip I2S、AK7755 codec 与 R1 machine driver 全部 built-in。capture ELF 为
+ARM EABI5 static，GNU_STACK 为 `RW`，符号表没有运行时 UND。initramfs 清单确认五个测试工具
+均存在。14,348,252-byte FIT 低于 16 MiB，三个 component 经 `dumpimage` 抽出后均与输入
+`cmp` 一致：
+
+```text
+88aea676bc170409e6248c8ce6837a648568a3aececd6cd068c23cb904cfd464  kernel-mainline-6.18-ak7755-audio-soak-a7.config
+15e904c9c5686d6e719660440dec9df1c11a39325b13177c0547357c96cdba22  zImage-mainline-6.18-ak7755-audio-soak-a7
+657b8f9fff815e5590abd5a63608f237e7790b005ef0019a305bcd57662533e4  rk3229-phicomm-r1-mainline-6.18-ak7755-audio-soak-a7.dtb
+c224590b98a3bf1246d513a733561f1944c04fef7830d427642c6b04fbb22e5f  r1-initramfs-mainline-6.18-ak7755-audio-soak-a7.cpio.gz
+e9be41a37de7a39f66ac9669bdbcf431b77a41170f5bcf6f36d157929f57c6dd  r1-pcm-capture-test
+571c8927c705dd87aab9d935a30d90ddbfc3e4b47e3ad6b7f2b945af5e7c719d  r1-linux-mainline-6.18-ak7755-audio-soak-a7.itb
+```
+
+当前证据类型是主机构建产物，不是实机结果。默认 DFU 脚本已经锁定上述 A7 FIT/hash。下一步
+在 R1 上运行 `/bin/r1-audio-soak 60`；只有最终出现 `AUDIO_SOAK_PASS` 且 shell 退出码为 0，
+才能完成 A7。失败应保留并回传命令输出和其打印的 `/tmp/r1-audio-soak.*` 目录，不进入
+功放解除或非零播放阶段。
+
+### 首轮实机失败与 A7r2 修正
+
+首轮实机正确启动 `6.18.42-phicomm-r1-ak7755-audio-soak-a7-dirty`，前后两次 GPIO 检查均为
+功放 shutdown physical low/ACTIVE_LOW、mute high，CPU online 为 `0-3`。但所有 timeout
+调用分别报告 `can't execute '30'/'15'/'75'`，playback/capture 返回 127；因此 DMA delta、
+DSP RUN/STANDBY 都为零。这不是音频或无线失败，而是设备中的旧 BusyBox applet 要求
+`timeout -t SEC PROG`，首版脚本采用了新式 `timeout SEC PROG`。
+
+A7r2 已把五处调用全部改为旧版语法，并把 FIT description 和脚本 banner 标为 A7r2，便于
+确认没有重复启动首版。kernel/DT/capture ELF 均未改变；重新打包后的 initramfs 与 FIT hash
+已更新为上表值。该修正仍是主机候选，需再次运行同一条 `/bin/r1-audio-soak 60` 才能评价
+PCM、capture、DMA、DSP 或无线共存。
+
+### A7r2 实机完整通过
+
+用户启动后确认脚本 banner 为 A7r2。测试前 GPIO 为 AK7755 shutdown high、功放 shutdown
+physical low/ACTIVE_LOW、功放 mute high；CPU online 为 `0-3`。随后一次前台命令完成全部链路：
+
+```text
+DSP RUN armed: C1=0x21 CF=0xc
+wifi_scan_entries=31
+bt_bredr_scan_entries=1
+bt_le_scan_entries=18
+zero_stream_complete xruns=0
+capture_frames=2880000 capture_xruns=0
+dma_irq_before=0 dma_irq_after=5622 dma_irq_delta=5622
+dsp_run_delta=1 dsp_standby_delta=1
+AUDIO_SOAK_PASS seconds=60 full_duplex=1 wireless_coexist=1 amp_safe=1
+```
+
+最后一个 stream 关闭时硬件读回 `DSP STANDBY verified: C1=0x21 CF=0x0`。测试后功放两个
+安全电平与测试前一致；uptime 为 `65.32` 秒，四核 IPI2/IPI3 均有活动。由此 A7 的 PCM
+full-duplex 生命周期、PL330 DMA、DSP RUN/STANDBY、四核、无线共存和功放 fail-closed 条件
+均已在同一 60 秒窗口验证。
+
+必须保留一个边界：capture 左右声道都是 2,880,000 个 nonzero，但 peak 只有 1 LSB，近似
+RMS 为 0。该统计证明数据不是全零且 capture DMA 在前进，却没有证明真实麦克风信号进入；
+它很可能只是固定量化偏置/数字底噪。下一步先扩展只统计、不保存样本的 capture 工具，增加
+DC 均值、min/max、变化次数，并做静音与近场声音 A/B；继续保持功放 shutdown+mute。

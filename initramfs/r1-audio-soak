@@ -1,0 +1,178 @@
+#!/bin/sh
+set -u
+
+seconds=${1:-60}
+case "$seconds" in
+	''|*[!0-9]*)
+		echo "usage: r1-audio-soak [seconds: 30..120]" >&2
+		exit 2
+		;;
+esac
+if [ "$seconds" -lt 30 ] || [ "$seconds" -gt 120 ]; then
+	echo "seconds must be in range 30..120" >&2
+	exit 2
+fi
+
+work=/tmp/r1-audio-soak.$$
+mkdir -p "$work"
+play_pid=
+capture_pid=
+
+stop_children()
+{
+	[ -z "$play_pid" ] || kill "$play_pid" 2>/dev/null || true
+	[ -z "$capture_pid" ] || kill "$capture_pid" 2>/dev/null || true
+}
+trap 'stop_children; echo "AUDIO_SOAK_INTERRUPTED logs=$work"; exit 130' HUP INT TERM
+
+dma_count()
+{
+	awk '/110f0000.dma-controller/ {
+		for (i = 2; i <= NF && $i ~ /^[0-9]+$/; i++) total += $i
+	} END { print total + 0 }' /proc/interrupts
+}
+
+dsp_count()
+{
+	dmesg | awk -v pattern="$1" 'index($0, pattern) { count++ }
+		END { print count + 0 }'
+}
+
+scan_entries()
+{
+	awk -F= '/^scan_entries=/ { value = $2 }
+		END { print value + 0 }' "$1"
+}
+
+check_safety()
+{
+	label=$1
+	gpio=/sys/kernel/debug/gpio
+	echo "=== amplifier safety: $label ==="
+	grep -Ei 'amp|shutdown|mute' "$gpio" || return 1
+	shutdown_line=$(grep 'regulator-amp-shutdo' "$gpio") || return 1
+	mute_line=$(grep 'regulator-amp-mute-s' "$gpio") || return 1
+	case "$shutdown_line" in
+		*'out lo ACTIVE LOW'*) ;;
+		*) echo "FAIL: amplifier shutdown is not asserted" >&2; return 1 ;;
+	esac
+	case "$mute_line" in
+		*'out hi'*) ;;
+		*) echo "FAIL: amplifier mute is not asserted" >&2; return 1 ;;
+	esac
+	return 0
+}
+
+mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
+failures=0
+
+echo "R1 AUDIO A7r2: ${seconds}s full-duplex zero-playback/capture coexistence soak"
+echo "SAFETY: playback is all zero; amplifier must remain shutdown+mute."
+echo "PRIVACY: capture is reduced to statistics and is never stored."
+
+if ! check_safety before; then
+	echo "AUDIO_SOAK_FAIL stage=safety-before logs=$work"
+	exit 1
+fi
+
+online=$(cat /sys/devices/system/cpu/online)
+echo "cpu_online=$online"
+if [ "$online" != 0-3 ]; then
+	echo "FAIL: expected CPU0-3 online" >&2
+	echo "AUDIO_SOAK_FAIL stage=cpu-online logs=$work"
+	exit 1
+fi
+
+dma_before=$(dma_count)
+run_before=$(dsp_count 'DSP RUN armed')
+standby_before=$(dsp_count 'DSP STANDBY verified')
+failure_before=$(dsp_count 'failed to verify DSP')
+
+echo "=== starting full-duplex PCM ==="
+/bin/timeout -t "$((seconds + 15))" /bin/r1-pcm-clock-test "$seconds" \
+	>"$work/playback.log" 2>&1 &
+play_pid=$!
+sleep 1
+/bin/timeout -t "$((seconds + 15))" /bin/r1-pcm-capture-test "$seconds" \
+	>"$work/capture.log" 2>&1 &
+capture_pid=$!
+sleep 1
+
+echo "=== Wi-Fi active scan during PCM ==="
+if /bin/timeout -t 30 /bin/r1-wifi-scan >"$work/wifi.log" 2>&1; then
+	echo "wifi_scan_entries=$(scan_entries "$work/wifi.log")"
+else
+	echo "FAIL: Wi-Fi scan" >&2
+	cat "$work/wifi.log"
+	failures=$((failures + 1))
+fi
+
+echo "=== Bluetooth BR/EDR + LE scans during PCM ==="
+if /bin/timeout -t 15 /bin/r1-btmgmt power on >"$work/bt-power.log" 2>&1 &&
+   /bin/timeout -t 20 /bin/r1-btmgmt bredr-scan 10 >"$work/bt-bredr.log" 2>&1 &&
+   /bin/timeout -t 20 /bin/r1-btmgmt le-scan 10 >"$work/bt-le.log" 2>&1; then
+	echo "bt_bredr_scan_entries=$(scan_entries "$work/bt-bredr.log")"
+	echo "bt_le_scan_entries=$(scan_entries "$work/bt-le.log")"
+else
+	echo "FAIL: Bluetooth coexistence scan" >&2
+	cat "$work/bt-power.log" "$work/bt-bredr.log" "$work/bt-le.log" 2>/dev/null || true
+	failures=$((failures + 1))
+fi
+
+echo "=== waiting for PCM workers ==="
+if wait "$play_pid"; then
+	play_rc=0
+else
+	play_rc=$?
+	failures=$((failures + 1))
+fi
+play_pid=
+if wait "$capture_pid"; then
+	capture_rc=0
+else
+	capture_rc=$?
+	failures=$((failures + 1))
+fi
+capture_pid=
+
+cat "$work/playback.log"
+cat "$work/capture.log"
+echo "playback_rc=$play_rc capture_rc=$capture_rc"
+
+dma_after=$(dma_count)
+dma_delta=$((dma_after - dma_before))
+run_after=$(dsp_count 'DSP RUN armed')
+standby_after=$(dsp_count 'DSP STANDBY verified')
+failure_after=$(dsp_count 'failed to verify DSP')
+
+echo "dma_irq_before=$dma_before dma_irq_after=$dma_after dma_irq_delta=$dma_delta"
+echo "dsp_run_delta=$((run_after - run_before)) dsp_standby_delta=$((standby_after - standby_before))"
+if [ "$dma_delta" -le 0 ]; then
+	echo "FAIL: no PL330 DMA IRQ growth" >&2
+	failures=$((failures + 1))
+fi
+if [ "$run_after" -le "$run_before" ] || [ "$standby_after" -le "$standby_before" ]; then
+	echo "FAIL: missing new DSP RUN/STANDBY verification" >&2
+	failures=$((failures + 1))
+fi
+if [ "$failure_after" -ne "$failure_before" ]; then
+	echo "FAIL: DSP verification failure was logged" >&2
+	failures=$((failures + 1))
+fi
+
+if ! check_safety after; then
+	failures=$((failures + 1))
+fi
+
+echo "=== uptime and SMP IPI ==="
+cat /proc/uptime
+grep -E 'CPU0|IPI' /proc/interrupts
+echo "=== relevant kernel messages ==="
+dmesg | grep -Ei 'ak7755|i2s|dma|xrun|underrun|timeout|error|fail' || true
+
+if [ "$failures" -ne 0 ]; then
+	echo "AUDIO_SOAK_FAIL failures=$failures logs=$work"
+	exit 1
+fi
+
+echo "AUDIO_SOAK_PASS seconds=$seconds full_duplex=1 wireless_coexist=1 amp_safe=1 logs=$work"

@@ -343,6 +343,69 @@ low/ACTIVE_LOW、mute high，证明 driver 日志中的“amplifier controls unc
 没有解除功放。它仍没有证明 data2 算法的输入输出 routing、DAC 模拟输出、外部波形或扬声器
 声道；在建立受控 mute/unmute 与低幅测试前继续禁止非零 PCM。
 
+### Audio A7：单命令并发 capture/无线 soak 主机候选
+
+A7 不改变 A6 driver 或 A4 DT，也不增加任何功放解除路径。新增的 freestanding
+`r1-pcm-capture-test` 直接使用 ARM ALSA PCM UAPI，以 48 kHz、stereo、S16_LE、1024-frame
+period、4096-frame buffer 从 `pcmC0D0c` 读取。它不会把原始 PCM 写入文件或串口，只累计
+每声道 frames、nonzero、peak 和近似 RMS；任一 xrun 或两个声道全程均为零时返回失败。
+这只能验证 capture 数字链有活动，不能把统计值解释成校准后的声压、增益或声道映射。
+
+`/bin/r1-audio-soak [30..120]` 把原先分散的手工步骤收敛成前台命令。默认 60 秒，内部并发运行
+全零 playback 和上述 capture，并在 PCM 活动期间依次执行 Wi-Fi scan、Bluetooth BR/EDR 与
+LE scan。命令前后都检查功放 shutdown physical low/ACTIVE_LOW 和 mute high，同时要求
+CPU online 精确为 `0-3`、PL330 DMA IRQ 有增长、新增 DSP RUN/STANDBY 成对出现且没有状态
+验证失败。各外部工具都有 timeout；Ctrl+C trap 会终止两个 PCM 子进程并打印诊断目录，避免
+再次出现后台命令占住串口提示符的问题。成功只输出一个最终判据：
+
+```text
+AUDIO_SOAK_PASS seconds=60 full_duplex=1 wireless_coexist=1 amp_safe=1 ...
+```
+
+主机侧静态构建结果：capture ELF 是 ARM EABI5 static、GNU_STACK `RW` 且没有运行时 UND；
+initramfs 清单包含 playback、capture、soak、Wi-Fi 和 Bluetooth 五个工具；FIT 三个 payload
+均用 `dumpimage` 抽取并与输入逐字节比较一致。FIT 为 14,348,252 bytes，低于 16 MiB DFU
+alternate。SHA-256：
+
+```text
+88aea676bc170409e6248c8ce6837a648568a3aececd6cd068c23cb904cfd464  kernel-mainline-6.18-ak7755-audio-soak-a7.config
+15e904c9c5686d6e719660440dec9df1c11a39325b13177c0547357c96cdba22  zImage-mainline-6.18-ak7755-audio-soak-a7
+657b8f9fff815e5590abd5a63608f237e7790b005ef0019a305bcd57662533e4  rk3229-phicomm-r1-mainline-6.18-ak7755-audio-soak-a7.dtb
+c224590b98a3bf1246d513a733561f1944c04fef7830d427642c6b04fbb22e5f  r1-initramfs-mainline-6.18-ak7755-audio-soak-a7.cpio.gz
+e9be41a37de7a39f66ac9669bdbcf431b77a41170f5bcf6f36d157929f57c6dd  r1-pcm-capture-test
+571c8927c705dd87aab9d935a30d90ddbfc3e4b47e3ad6b7f2b945af5e7c719d  r1-linux-mainline-6.18-ak7755-audio-soak-a7.itb
+```
+
+当前只完成主机构建，不能据此声称 R1 capture 或并发共存已通过。下一步经 DFU RAM-only 启动
+A7 后只运行 `/bin/r1-audio-soak 60`；失败时保留输出中给出的 `/tmp/r1-audio-soak.*` 日志，
+不继续到功放 unmute 或非零 PCM。
+
+首轮实机运行没有进入上述链路：设备内 BusyBox `timeout` 是旧语法，`timeout 75 PROG` 将
+`75` 当成程序并返回 127，导致 playback、capture 和无线工具全部未启动。该次输出仍验证
+CPU online 为 `0-3` 且功放前后保持安全，但 `DMA=0`、无 DSP 状态变化只是上游工具没执行的
+连锁结果，不能当作硬件失败。A7r2 已把所有调用改成 `timeout -t SEC PROG`，FIT description
+和脚本首行均标记 A7r2；上述 SHA-256 已更新为修正版，等待重新上板。
+
+#### A7r2 RAM-only 实机通过
+
+修正版 banner 为 `R1 AUDIO A7r2`。功放测试前后均为 shutdown physical low/ACTIVE_LOW、
+mute high；CPU online 为 `0-3`。60 秒期间 playback 与 capture 并发运行，DSP 在 4.181 秒
+进入 RUN（`C1=0x21/CF=0x0c`），在 65.186 秒最后关闭 stream 后回到 STANDBY
+（`C1=0x21/CF=0x00`）。两方向均处理 2,880,000 frames、`xruns=0`，PL330 DMA IRQ 从 0
+增长到 5,622。并发期间 Wi-Fi、BR/EDR、LE 分别报告 31、1、18 个 scan entries；结束时
+uptime 为 65.32 秒，CPU0-3 四列均有 IPI2/IPI3 活动。最终统一结果为：
+
+```text
+AUDIO_SOAK_PASS seconds=60 full_duplex=1 wireless_coexist=1 amp_safe=1
+```
+
+capture 的原始样本按设计未保存。统计为左右声道各 2,880,000 个 nonzero，但两路 peak 都只有
+1 LSB，当前近似 RMS 因工具的低位缩放显示为 0。这足以证明 ALSA capture、I2S2/PL330 DMA
+与并发 stream 生命周期确实活动，却不能证明麦克风模拟输入、ADC 增益或 data2 DSP routing；
+更合理的当前解释是固定 1-LSB 量化偏置或数字底噪。下一步应在功放继续 shutdown+mute 时，
+用受控近场声音/静音 A/B 和更精细的直流均值/极值/变化计数统计定位 capture 输入，不需要也
+不允许先解除扬声器功放。
+
 ## 3. PipeWire DSP
 
 建议创建一个虚拟输出节点：

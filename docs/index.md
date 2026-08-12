@@ -228,8 +228,21 @@ FIT 的三个 payload 已解包逐字节核对，默认 DFU 脚本已钉到 SHA-
 `bf7ff93e05c5c36407b04ebdf4dfcb16a32c86ca00cbfd348f4d5638721733de`。A6 随后 RAM-only
 实机通过：10 秒全零 PCM 的 RUN 读回为 `C1=0x21/CF=0x0c`，最后关闭 stream 后 STANDBY
 为 `C1=0x21/CF=0x00`，工具返回 `xruns=0`、退出码 0；测试前后功放均保持 shutdown+mute。
-这验证了可回退的 DSP reset/run 状态链，但尚未证明算法 routing、DAC 输出或扬声器声道；
-下一步先设计受控 mute/unmute 和低幅度验证，仍禁止直接播放普通音频。
+这验证了可回退的 DSP reset/run 状态链，但尚未证明算法 routing、DAC 输出或扬声器声道。
+为避免继续拆成许多手工步骤，Audio A7 已生成单命令候选：`/bin/r1-audio-soak 60` 在功放
+始终 shutdown+mute、playback 始终全零的边界内，并发运行 playback/capture、Wi-Fi 与 Bluetooth
+扫描，并统一检查四核、PL330 DMA、DSP RUN/STANDBY、xrun、录音统计和前后功放电平。录音原始
+样本不保存、不打印，只输出每声道 nonzero/peak/近似 RMS。14,348,252-byte FIT 的三个 payload
+已抽取逐字节核对；默认 DFU 脚本已锁定 SHA-256
+`571c8927c705dd87aab9d935a30d90ddbfc3e4b47e3ad6b7f2b945af5e7c719d`。A7 首轮实机只暴露
+BusyBox `timeout` 兼容性错误，所有子工具均未启动；A7r2 已改用旧版支持的 `timeout -t SEC`
+并重新封装。A7r2 随后实机完整通过：60 秒并发 playback/capture 均为 2,880,000 frames、
+`xruns=0`，PL330 IRQ 增长 5,622，DSP RUN/STANDBY 各新增一次；Wi-Fi、BR/EDR、LE 分别得到
+31、1、18 个扫描项，CPU0-3 与四核 IPI 正常，uptime 到 65.32 秒，功放前后保持
+shutdown+mute，最终输出 `AUDIO_SOAK_PASS`。capture 两路虽然每帧均非零，但 peak 只有 1 LSB、
+近似 RMS 为 0；这只证明 capture PCM/DMA 数据链活动，更像固定量化偏置或数字底噪，不能
+声称麦克风、ADC 或 DSP routing 已正确。下一步应在功放继续关闭时辨别 capture routing 与
+真实输入响应，仍不播放非零 PCM。
 原厂 data2 二进制没有公开再分发许可，仍只留在 `backup/` 和本地生成的 initramfs，不能
 提交公开仓库。
 
@@ -335,7 +348,7 @@ secure INTID55/APR0 的完整定位和 clean kernel 验证。下一实机步骤�
 10. YMODEM 已实机完整传入 FIT，开源 OP-TEE `3.7.0` 已初始化并提供 PSCI v1.0。secure SPL 证明 MaskROM/RockUSB 在进入 TEE 前遗留唯一 active 的 USB OTG INTID 55 与 APR0=`1`；精确清理后 `GC` 为 RPR=`0xff`、APR0=`0`、无 active 位。clean v8 随后正常越过旧 `No ATAGs?` 边界，CPU0/CPU1 online，于 2.078 秒执行 `/init` 并进入 shell；用户确认 uptime 约 700 秒。原 CPU0 IRQ/SGI 死锁及当前 RAM-only SMP 冻结已解决。
 11. clean 四核 v9 已用修正后的 INTID55 cleanup SPL 实机通过。白名单救援 v11 的最小-DT A 线四核正常，完整 eMMC DT 的 B1/B2 都只读枚举成功但 CPU1–CPU3 未 online；B2 已否定 arch-timer，C2 又否定 Cortex-A7 814220 单变量。C1 用同一完整 B2 DT/initramfs 换回 multi_v7 v9 后四核与 eMMC 同时通过，现作为外设工作基线；B3 CRU A/B 延后到最小化阶段。
 12. 已从 C1 构建 USB Host A1，但用户确认成品没有可用 USB 外设口，该支线已降级为 SoC/DFU 研究产物；板载 SDIO Wi-Fi、UART Bluetooth（含 BCM4345C0 HCD build 0124、AES/CMAC）均已实机通过。
-13. eMMC A5 常驻开源启动链已经写后读回并冷启动通过；Linux 仍只经 U-Boot DFU 装入 RAM。Linux 6.18.42 Audio A6 已实机完成可读回的 DSP RUN/STANDBY、10 秒全零 PCM `xruns=0` 与功放前后安全验证。下一步先建立受控 mute/unmute 和低幅测试边界，不写 eMMC、不直接播放普通音频。
+13. eMMC A5 常驻开源启动链已经写后读回并冷启动通过；Linux 仍只经 U-Boot DFU 装入 RAM。Linux 6.18.42 Audio A7r2 已把 playback/capture、无线、DMA、DSP、四核和功放安全检查收敛成单命令并实机通过 60 秒共存验证；capture 目前仅见 1-LSB 级活动，真实麦克风/routing 仍待 A/B。不写 eMMC、不解除功放、不播放非零音频。
 
 ## 文档导航
 
@@ -437,6 +450,7 @@ secure INTID55/APR0 的完整定位和 clean kernel 验证。下一实机步骤�
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-dai-a4.itb` | 已实机通过 Audio A4 核心链：AK7755 + I2S2 + 专用 machine card，固定 48 kHz/stereo/S16/32fs，card/PCM/pinmux/clock/safe GPIO/四核在线已验证；DSP stopped、功放 shutdown+mute、禁止播放。14,339,592 B，SHA-256 `245e705f07ad5d0ed585ad91e2a3b9c3379e199ca54205cba7bc7aa75ef32ba5`；A4 自身 >30 s 与无线回归待补。 |
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-pcm-clock-a5.itb` | 已实机通过 Audio A5：复用 A4 kernel/DTB，只在 initramfs 加入全零 PCM clock/DMA 工具；30 秒 48 kHz/stereo/S16 零流 `xruns=0`，运行态时钟和 PL330 DMA IRQ 已验证，结束后时钟回落且功放保持 shutdown+mute。14,340,996 B，SHA-256 `bb59d10590d9c61add007a34c55c275766d8ea199df80759df4aea79305771f1`；禁止非零 PCM。 |
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-dsp-run-a6.itb` | 已实机通过 Audio A6：PCM prepare/last-close 驱动 AK7755 RUN/STANDBY；10 秒全零流读回 `C1=0x21`、CF `0x0c→0x00`，`xruns=0`，功放前后保持 shutdown+mute。14,345,092 B，SHA-256 `bf7ff93e05c5c36407b04ebdf4dfcb16a32c86ca00cbfd348f4d5638721733de`；尚未验证算法 routing 或声音输出。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-audio-soak-a7.itb` | 已实机通过 Audio A7r2：60 秒并发零 playback/capture 均无 xrun，DMA IRQ `+5622`、DSP RUN/STANDBY 成对、四核与 Wi-Fi/BR-EDR/LE 共存、功放前后安全，最终 `AUDIO_SOAK_PASS`。capture 仅见两路 peak=1 LSB，尚未证明麦克风/routing。14,348,252 B，SHA-256 `571c8927c705dd87aab9d935a30d90ddbfc3e4b47e3ad6b7f2b945af5e7c719d`。 |
 
 ## 安全边界
 
