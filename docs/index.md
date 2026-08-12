@@ -220,6 +220,16 @@ period、4096-frame buffer，只向 playback 写全零，默认 20 秒且限制�
 IRQ 32 有活动，结束后 stream clocks 回落。测试后 GPIO 和 regulator 两条证据再次确认
 AK7755 仍工作、TPA3118D2 仍 shutdown+mute。该结果验证 ALSA→I2S2→DMA 的无声数字链，
 不等同于 DSP 已运行或扬声器播放成功；继续禁止非零数据和解除功放。
+Audio A6 主机候选现已完成：参考固定 AKM GPL driver 的 RUN/STANDBY 顺序，在 PCM prepare
+时依次释放 CKRESETN 与 CRESETN/DSPRESETN，并在最后关闭 stream 时清除后两位；两端均
+读回 C1/CF，不符合预期即失败并重新断言 AK7755 reset。A4 DT、全零工具和
+功放 shutdown+mute 安全链均未改变，没有加入 OFREG/ACRAM 或非零音频路径。14,345,092-byte
+FIT 的三个 payload 已解包逐字节核对，默认 DFU 脚本已钉到 SHA-256
+`bf7ff93e05c5c36407b04ebdf4dfcb16a32c86ca00cbfd348f4d5638721733de`。A6 随后 RAM-only
+实机通过：10 秒全零 PCM 的 RUN 读回为 `C1=0x21/CF=0x0c`，最后关闭 stream 后 STANDBY
+为 `C1=0x21/CF=0x00`，工具返回 `xruns=0`、退出码 0；测试前后功放均保持 shutdown+mute。
+这验证了可回退的 DSP reset/run 状态链，但尚未证明算法 routing、DAC 输出或扬声器声道；
+下一步先设计受控 mute/unmute 和低幅度验证，仍禁止直接播放普通音频。
 原厂 data2 二进制没有公开再分发许可，仍只留在 `backup/` 和本地生成的 initramfs，不能
 提交公开仓库。
 
@@ -325,7 +335,7 @@ secure INTID55/APR0 的完整定位和 clean kernel 验证。下一实机步骤�
 10. YMODEM 已实机完整传入 FIT，开源 OP-TEE `3.7.0` 已初始化并提供 PSCI v1.0。secure SPL 证明 MaskROM/RockUSB 在进入 TEE 前遗留唯一 active 的 USB OTG INTID 55 与 APR0=`1`；精确清理后 `GC` 为 RPR=`0xff`、APR0=`0`、无 active 位。clean v8 随后正常越过旧 `No ATAGs?` 边界，CPU0/CPU1 online，于 2.078 秒执行 `/init` 并进入 shell；用户确认 uptime 约 700 秒。原 CPU0 IRQ/SGI 死锁及当前 RAM-only SMP 冻结已解决。
 11. clean 四核 v9 已用修正后的 INTID55 cleanup SPL 实机通过。白名单救援 v11 的最小-DT A 线四核正常，完整 eMMC DT 的 B1/B2 都只读枚举成功但 CPU1–CPU3 未 online；B2 已否定 arch-timer，C2 又否定 Cortex-A7 814220 单变量。C1 用同一完整 B2 DT/initramfs 换回 multi_v7 v9 后四核与 eMMC 同时通过，现作为外设工作基线；B3 CRU A/B 延后到最小化阶段。
 12. 已从 C1 构建 USB Host A1，但用户确认成品没有可用 USB 外设口，该支线已降级为 SoC/DFU 研究产物；板载 SDIO Wi-Fi、UART Bluetooth（含 BCM4345C0 HCD build 0124、AES/CMAC）均已实机通过。
-13. eMMC A5 常驻开源启动链已经写后读回并冷启动通过；Linux 仍只经 U-Boot DFU 装入 RAM。Linux 6.18.42 Audio A3 已实机确认 AK7755EN ID、PRAM/CRAM 硬件 CRC、四核、>30 s、2.4/5 GHz Wi-Fi 和 Bluetooth LE 全部通过。下一步为 A4 DAI/I2S2/machine-card 枚举，功放继续 shutdown+mute，不写 eMMC、不播放音频。
+13. eMMC A5 常驻开源启动链已经写后读回并冷启动通过；Linux 仍只经 U-Boot DFU 装入 RAM。Linux 6.18.42 Audio A6 已实机完成可读回的 DSP RUN/STANDBY、10 秒全零 PCM `xruns=0` 与功放前后安全验证。下一步先建立受控 mute/unmute 和低幅测试边界，不写 eMMC、不直接播放普通音频。
 
 ## 文档导航
 
@@ -426,6 +436,7 @@ secure INTID55/APR0 的完整定位和 clean kernel 验证。下一实机步骤�
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-fw-a3.itb` | 已实机通过的 RAM-only Audio A3：Linux 6.18.42、四核/无线回归配置、无 DAI 的 AK7755 ID + PRAM/CRAM 严格 CRC verifier；13.7 MiB，SHA-256 `3b5a4d788f7f66ab57c5dfc62d554b89754594c5a8473be2aff82a63a8e4679f` |
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-dai-a4.itb` | 已实机通过 Audio A4 核心链：AK7755 + I2S2 + 专用 machine card，固定 48 kHz/stereo/S16/32fs，card/PCM/pinmux/clock/safe GPIO/四核在线已验证；DSP stopped、功放 shutdown+mute、禁止播放。14,339,592 B，SHA-256 `245e705f07ad5d0ed585ad91e2a3b9c3379e199ca54205cba7bc7aa75ef32ba5`；A4 自身 >30 s 与无线回归待补。 |
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-pcm-clock-a5.itb` | 已实机通过 Audio A5：复用 A4 kernel/DTB，只在 initramfs 加入全零 PCM clock/DMA 工具；30 秒 48 kHz/stereo/S16 零流 `xruns=0`，运行态时钟和 PL330 DMA IRQ 已验证，结束后时钟回落且功放保持 shutdown+mute。14,340,996 B，SHA-256 `bb59d10590d9c61add007a34c55c275766d8ea199df80759df4aea79305771f1`；禁止非零 PCM。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-dsp-run-a6.itb` | 已实机通过 Audio A6：PCM prepare/last-close 驱动 AK7755 RUN/STANDBY；10 秒全零流读回 `C1=0x21`、CF `0x0c→0x00`，`xruns=0`，功放前后保持 shutdown+mute。14,345,092 B，SHA-256 `bf7ff93e05c5c36407b04ebdf4dfcb16a32c86ca00cbfd348f4d5638721733de`；尚未验证算法 routing 或声音输出。 |
 
 ## 安全边界
 

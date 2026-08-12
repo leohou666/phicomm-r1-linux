@@ -8,8 +8,8 @@
  * The RAM download and initial serial-port programming are derived from
  * AKM's GPL-licensed Linux 3.10 reference driver.  The first PCM milestone
  * is deliberately narrow and fail-closed: 48 kHz, stereo, S16, codec clock
- * consumer, 32fs.  The DSP remains stopped and this driver does not control
- * the external amplifier.
+ * consumer, 32fs.  The DSP only leaves reset while a prepared PCM stream is
+ * open, and this driver does not control the external amplifier.
  */
 
 #include <linux/delay.h>
@@ -40,6 +40,10 @@
 #define AK7755_REG_CA_CLOCK_OUTPUT	0xca
 #define AK7755_D0_CRCE			BIT(6)
 #define AK7755_CF_DLRDY			BIT(0)
+#define AK7755_CF_DSPRESETN		BIT(2)
+#define AK7755_CF_CRESETN		BIT(3)
+#define AK7755_CF_RUN_MASK		(AK7755_CF_CRESETN | \
+					 AK7755_CF_DSPRESETN)
 
 #define AK7755_C0_FS_MASK		GENMASK(2, 0)
 #define AK7755_C0_FS_48KHZ		0x05
@@ -47,6 +51,7 @@
 #define AK7755_C0_SLAVE_BICK		GENMASK(5, 4)
 #define AK7755_C1_BICK_FS_MASK		GENMASK(5, 4)
 #define AK7755_C1_BICK_32FS		BIT(5)
+#define AK7755_C1_CKRESETN		BIT(0)
 #define AK7755_C2_LRIF_MASK		GENMASK(5, 4)
 #define AK7755_C2_LRIF_I2S		BIT(4)
 #define AK7755_CA_BICK_LRCK_OUTPUT	GENMASK(6, 5)
@@ -85,6 +90,8 @@ struct ak7755_priv {
 	struct i2c_client *client;
 	struct gpio_desc *reset_gpio;
 	struct mutex lock;
+	unsigned int open_streams;
+	bool dsp_running;
 };
 
 /* AK7755 reads use a command byte, followed by a repeated-start read. */
@@ -338,7 +345,134 @@ out_unlock:
 	return ret;
 }
 
+static int ak7755_set_dsp_run_locked(struct ak7755_priv *ak7755)
+{
+	u8 c1;
+	u8 cf;
+	int ret;
+
+	if (ak7755->dsp_running)
+		return 0;
+
+	/* AKM's GPL state machine releases the clock reset before DSP reset. */
+	ret = ak7755_update_bits(ak7755, AK7755_REG_C1_CLOCK_SETTING2,
+				 AK7755_C1_CKRESETN, AK7755_C1_CKRESETN);
+	if (ret)
+		return ret;
+
+	usleep_range(10000, 11000);
+	ret = ak7755_update_bits(ak7755, AK7755_REG_CF_RESET_POWER,
+				 AK7755_CF_RUN_MASK, AK7755_CF_RUN_MASK);
+	if (ret)
+		return ret;
+
+	usleep_range(10000, 11000);
+	ret = ak7755_register_read(ak7755, AK7755_REG_C1_CLOCK_SETTING2, &c1);
+	if (ret)
+		return ret;
+	ret = ak7755_register_read(ak7755, AK7755_REG_CF_RESET_POWER, &cf);
+	if (ret)
+		return ret;
+	if ((c1 & AK7755_C1_CKRESETN) != AK7755_C1_CKRESETN ||
+	    (cf & AK7755_CF_RUN_MASK) != AK7755_CF_RUN_MASK)
+		return -EIO;
+
+	ak7755->dsp_running = true;
+	dev_info(&ak7755->client->dev,
+		 "DSP RUN armed: C1=%#02x CF=%#02x; amplifier controls unchanged\n",
+		 c1, cf);
+	return 0;
+}
+
+static int ak7755_set_dsp_standby_locked(struct ak7755_priv *ak7755)
+{
+	u8 c1;
+	u8 cf;
+	int ret;
+
+	if (!ak7755->dsp_running)
+		return 0;
+
+	/* Keep CKRESETN asserted, but hold both codec and DSP cores in reset. */
+	ret = ak7755_update_bits(ak7755, AK7755_REG_CF_RESET_POWER,
+				 AK7755_CF_RUN_MASK, 0);
+	if (ret)
+		return ret;
+
+	usleep_range(10000, 11000);
+	ret = ak7755_register_read(ak7755, AK7755_REG_C1_CLOCK_SETTING2, &c1);
+	if (ret)
+		return ret;
+	ret = ak7755_register_read(ak7755, AK7755_REG_CF_RESET_POWER, &cf);
+	if (ret)
+		return ret;
+	if (cf & AK7755_CF_RUN_MASK)
+		return -EIO;
+
+	ak7755->dsp_running = false;
+	dev_info(&ak7755->client->dev,
+		 "DSP STANDBY verified: C1=%#02x CF=%#02x; amplifier controls unchanged\n",
+		 c1, cf);
+	return 0;
+}
+
+static int ak7755_dai_startup(struct snd_pcm_substream *substream,
+			      struct snd_soc_dai *dai)
+{
+	struct ak7755_priv *ak7755 = snd_soc_component_get_drvdata(dai->component);
+
+	mutex_lock(&ak7755->lock);
+	ak7755->open_streams++;
+	mutex_unlock(&ak7755->lock);
+
+	return 0;
+}
+
+static int ak7755_dai_prepare(struct snd_pcm_substream *substream,
+			      struct snd_soc_dai *dai)
+{
+	struct ak7755_priv *ak7755 = snd_soc_component_get_drvdata(dai->component);
+	int ret;
+
+	mutex_lock(&ak7755->lock);
+	ret = ak7755_set_dsp_run_locked(ak7755);
+	mutex_unlock(&ak7755->lock);
+	if (ret) {
+		dev_err(&ak7755->client->dev,
+			"failed to verify DSP RUN, asserting reset: %d\n", ret);
+		gpiod_set_value_cansleep(ak7755->reset_gpio, 1);
+	}
+
+	return ret;
+}
+
+static void ak7755_dai_shutdown(struct snd_pcm_substream *substream,
+				struct snd_soc_dai *dai)
+{
+	struct ak7755_priv *ak7755 = snd_soc_component_get_drvdata(dai->component);
+	int ret = 0;
+
+	mutex_lock(&ak7755->lock);
+	if (WARN_ON(!ak7755->open_streams))
+		goto out_unlock;
+
+	ak7755->open_streams--;
+	if (!ak7755->open_streams)
+		ret = ak7755_set_dsp_standby_locked(ak7755);
+
+out_unlock:
+	mutex_unlock(&ak7755->lock);
+	if (ret) {
+		dev_err(&ak7755->client->dev,
+			"failed to verify DSP STANDBY, asserting reset: %d\n", ret);
+		gpiod_set_value_cansleep(ak7755->reset_gpio, 1);
+	}
+}
+
 static const struct snd_soc_dai_ops ak7755_dai_ops = {
+	.startup = ak7755_dai_startup,
+	.shutdown = ak7755_dai_shutdown,
+	.prepare = ak7755_dai_prepare,
 	.set_fmt = ak7755_set_dai_fmt,
 };
 
@@ -422,7 +556,7 @@ static int ak7755_i2c_probe(struct i2c_client *client)
 		goto err_assert_reset;
 
 	dev_info(&client->dev,
-		 "AK7755EN ID 0x55; firmware verified, DSP intentionally stopped\n");
+		 "AK7755EN ID 0x55; firmware verified, DSP waits for PCM prepare\n");
 	return 0;
 
 err_assert_reset:

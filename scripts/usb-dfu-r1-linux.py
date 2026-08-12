@@ -20,9 +20,9 @@ from desktop_notify import notify
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FIT = (
-    ROOT / "build/artifacts/r1-linux-mainline-6.18-ak7755-pcm-clock-a5.itb"
+    ROOT / "build/artifacts/r1-linux-mainline-6.18-ak7755-dsp-run-a6.itb"
 )
-DEFAULT_FIT_SHA256 = "bb59d10590d9c61add007a34c55c275766d8ea199df80759df4aea79305771f1"
+DEFAULT_FIT_SHA256 = "bf7ff93e05c5c36407b04ebdf4dfcb16a32c86ca00cbfd348f4d5638721733de"
 
 
 def sha256(path: Path) -> str:

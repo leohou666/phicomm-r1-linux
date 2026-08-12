@@ -5470,3 +5470,102 @@ controller bus clock 保持的预期。过滤 dmesg 没有发现 PCM/I2S/DMA xru
 R1 上 ALSA PCM 参数协商、I2S2 stream clocks、PL330 DMA 和无 xrun 的 30 秒全零传输均通过，
 且退出后的时钟与功放 fail-closed 状态正确恢复。本次没有解除功放、没有发送非零样本，DSP
 仍 stopped；不能据此声称扬声器可播放、AK7755 DSP routing 正确或外部 BCLK/LRCK 波形已测量。
+
+## Audio A6 fail-closed DSP RUN/STANDBY 主机候选（2026-08-12）
+
+A5 已证明 ALSA→I2S2→PL330 可无 xrun 连续传输全零数据，但当时 AK7755 DSP 一直处于
+stopped。A6 只改变这个状态边界，继续让 TPA3118D2 保持 shutdown+mute，也不加入任何非零
+样本。规范来源是 Asahi Kasei Microdevices 的 GPL-2.0-or-later Linux 3.10 ASoC driver，
+固定提交及链接为 hello/kasa commit
+[`762398dc`](https://github.com/hello/kasa/blob/762398dc7ceff508a4ac834ff93b14955d802328/ambarella/kernel/linux-3.10/sound/soc/codecs/ak7755.c)，
+本地固定文件 SHA-256 为：
+
+```text
+d8c61bb3a66ae7c61ad2d3f5e6c0c460465093f8279d97c742f5bd64a1ad35b8  /tmp/r1-kasa-ak7755.c
+e88a4b4b6791c975fda9163c95bd7517fe5a4d41974706f8d064ccbf500417ba  /tmp/r1-kasa-ak7755.h
+```
+
+该来源的 RUN 状态先设置 C1 bit 0 `CKRESETN`，等待 10 ms，再设置 CF bits 3/2
+`CRESETN|DSPRESETN` 并等待 10 ms；STANDBY 保持前者、清除后两位。A6 Linux 6.18 driver
+复用这个顺序，但不照搬旧 ASoC 生命周期：PCM `.prepare` 才进入 RUN，最后一个打开 stream
+的 `.shutdown` 立即回到 STANDBY。RUN/STANDBY 都以 repeated-start 读回 C1/CF；RUN 不匹配
+会阻止 prepare；任一状态读回失败都会重新断言 AK7755 reset。driver 不持有也不修改功放 GPIO。
+
+R1 原厂日志只明确记录 data2 PRAM/CRAM 加载及 CRC，没有 OFREG/ACRAM 下载行。因此 A6
+不把 data2 OFREG/ACRAM 推断成 RUN 前置条件；这是待实机验证的保守假设，不是已经确认的
+算法 routing。A4 DT 与 A5 全零工具保持不变。
+
+可复现构建命令：
+
+```sh
+KERNEL_BUILD=build/kernel-6.18-ak7755-dsp-run-a6 \
+KERNEL_EXTRA_FRAGMENTS='kernel/config/r1-5.10-clean-4core.fragment kernel/config/r1-5.10-wifi-brcmfmac-a2.fragment kernel/config/r1-5.10-wifi-regulatory-a3.fragment kernel/config/r1-5.10-bt-rk805-clkout.fragment kernel/config/r1-5.10-bt-serdev-a1r6.fragment kernel/config/r1-5.10-bt-crypto-a1r9.fragment kernel/config/r1-6.18-ak7755-fw-a3.fragment kernel/config/r1-6.18-ak7755-dai-a4.fragment kernel/config/r1-6.18-ak7755-dsp-run-a6.fragment' \
+BOARD_DTS=kernel/dts/rk3229-phicomm-r1-open-optee-ak7755-dai-a4.dts \
+KERNEL_ARTIFACT_TAG=mainline-6.18-ak7755-dsp-run-a6 \
+scripts/build-kernel.sh
+
+R1_WIFI_FIRMWARE=1 R1_WIFI_REGULATORY=1 R1_BLUETOOTH_FIRMWARE=1 \
+R1_WIFI_SCAN_TOOL=build/artifacts/r1-nl80211-scan \
+R1_BLUETOOTH_MGMT_TOOL=build/artifacts/r1-btmgmt R1_AK7755_FIRMWARE=1 \
+R1_PCM_CLOCK_TEST_TOOL=build/artifacts/r1-pcm-clock-test \
+INITRAMFS_ARTIFACT_TAG=mainline-6.18-ak7755-dsp-run-a6 \
+scripts/build-initramfs.sh
+
+mkimage -f scripts/r1-linux-mainline-6.18-ak7755-dsp-run-a6.its \
+  build/artifacts/r1-linux-mainline-6.18-ak7755-dsp-run-a6.itb
+```
+
+完整 multi_v7 内核链接通过；最终 config 中 `SND_SOC_ROCKCHIP_I2S`、
+`SND_SOC_PHICOMM_R1_AK7755`、`SND_SOC_AK7755` 均为 built-in，localversion 为
+`-phicomm-r1-ak7755-dsp-run-a6`。`checkpatch.pl --strict` 为 0 errors、0 warnings、6 个
+非阻塞 CHECK。FIT 大小 14,345,092 bytes，低于 DFU RAM alternate 的 16 MiB；三个 component
+分别用 `dumpimage` 抽出并与输入 `cmp` 一致。产物 SHA-256：
+
+```text
+297f3705058c04f1222b5ae494ed4b91eccd03ef32d74512363bdb23bf53d50f  kernel/overlays/linux-6.18.42/sound/soc/codecs/ak7755.c
+972f9de6dd15ca5d6a6ed199cec66cb09559ee1ad8f94f1fe319d7a2ace2ae4a  build/artifacts/kernel-mainline-6.18-ak7755-dsp-run-a6.config
+7d645658443dc64ee39cbb20266dc57494b79dd63d32983d1684b02c2e9bf606  build/artifacts/zImage-mainline-6.18-ak7755-dsp-run-a6
+d624e87edbd1a124283d7ba31169b2847f62cf924a719ac6a4129419560c82c3  build/artifacts/r1-initramfs-mainline-6.18-ak7755-dsp-run-a6.cpio.gz
+657b8f9fff815e5590abd5a63608f237e7790b005ef0019a305bcd57662533e4  build/artifacts/rk3229-phicomm-r1-mainline-6.18-ak7755-dsp-run-a6.dtb
+bf7ff93e05c5c36407b04ebdf4dfcb16a32c86ca00cbfd348f4d5638721733de  build/artifacts/r1-linux-mainline-6.18-ak7755-dsp-run-a6.itb
+```
+
+当前只完成主机构建与静态审计，不能声称 R1 已进入 DSP RUN。下一步经 eMMC 常驻 U-Boot
+把 A6 FIT 下载到 RAM，先检查功放安全 GPIO，再在前台运行 `/bin/r1-pcm-clock-test 10`。
+验收必须同时得到 DSP RUN/STANDBY 寄存器读回、`zero_stream_complete xruns=0` 和测试后功放
+仍 shutdown+mute；失败时停止，不运行非零 PCM。
+
+## Audio A6 RAM-only 实机验证通过（2026-08-12）
+
+用户经默认 hash-pinned DFU 脚本启动 A6，内核版本明确为
+`6.18.42-phicomm-r1-ak7755-dsp-run-a6-dirty`。启动时 PRAM 5308-byte CRC `0x9916`、
+CRAM 1113-byte CRC `0x4453`、AK7755EN ID `0x55` 和 `RK_AK7755` card 均正常。
+
+测试前安全状态：
+
+```text
+gpio-29  shutdown                 out hi
+gpio-15  regulator-amp-shutdo    out lo ACTIVE LOW
+gpio-17  regulator-amp-mute-s    out hi
+```
+
+随后在前台执行 `/bin/r1-pcm-clock-test 10`。关键原始输出为：
+
+```text
+[   20.844335] ak7755 1-0019: DSP RUN armed: C1=0x21 CF=0xc; amplifier controls unchanged
+pcm=48kHz stereo S16_LE access=RW_INTERLEAVED period=1024 buffer=4096
+zero_stream_seconds=10 state=running
+[   30.778254] ak7755 1-0019: DSP STANDBY verified: C1=0x21 CF=0x0; amplifier controls unchanged
+zero_stream_complete xruns=0
+pcm_rc=0
+```
+
+这里 `C1=0x21` 验证 32fs bit 5 与 CKRESETN bit 0；RUN 的 `CF=0x0c` 验证
+CRESETN/DSPRESETN bits 3/2 均释放，最后关闭 PCM 后 `CF=0x00` 验证两位重新进入 reset。
+测试后的三个 GPIO 值与测试前完全一致，独立证明 TPA3118D2 始终保持 shutdown+mute。
+
+因此 A6 阶段完成：R1 已实机验证 AK7755 data2 firmware、受限 DAI、DSP RUN/STANDBY 读回、
+10 秒全零 PCM 和无 xrun 的可回退链。日志中 cpufreq `-19`、UART DMA request 和 brcmfmac
+board-specific firmware 首次查找 `-2` 均为既有非阻塞提示，本轮没有新增音频错误。尚未验证
+的是 data2 算法 routing、DAC/ADC 模拟路径、外部波形、声道映射和扬声器输出；下一阶段必须
+先设计受控 mute/unmute 与低幅测试，不能从本结果直接跳到普通音频播放。

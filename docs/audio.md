@@ -293,6 +293,56 @@ underrun、timeout 或新错误。这里“playback”仅指 ALSA→I2S2→DMA �
 DSP stopped 和功放 shutdown+mute 使本次不是扬声器声音验证，也没有证明外部 BCLK/LRCK
 波形或 AK7755 DSP routing。下一阶段仍应保持功放关闭，先建立 DSP start/routing 的可回退边界。
 
+### Audio A6：fail-closed DSP RUN/STANDBY 主机候选
+
+A6 只推进 AK7755 状态机，不解除 TPA3118D2。固定 commit `762398dc` 的 AKM GPL driver
+在 RUN 路径先将 C1 bit 0 `CKRESETN` 置 1，等待 10 ms，再将 CF bits 3/2
+`CRESETN|DSPRESETN` 置 1 并再等待 10 ms；STANDBY 保持 `CKRESETN=1`，清除 CF bits 3/2。
+当前 Linux 6.18 driver 按相同顺序实现，但把生命周期收紧为 PCM `.prepare` 进入 RUN、最后
+一个打开的 stream `.shutdown` 回到 STANDBY。两次转换都会通过器件 repeated-start read
+读回 C1/CF；任一状态不符合预期都会拒绝/结束 stream 并重新断言 AK7755 reset。
+
+本阶段没有加入 OFREG/ACRAM：R1 原厂启动日志只证明 data2 PRAM/CRAM 被加载，尚无本机证据
+证明 data2 OFREG/ACRAM 是进入 RUN 的前置条件。也没有增加 mixer/sysfs 接口或功放控制；
+GPIO/安全 regulator、A4 DT 和 A5 全零工具保持不变。因此即使 A6 上板 RUN 成功，也只证明
+DSP reset/clock 状态与零 PCM 数字链可以协同工作，不能声称 DSP 算法 routing 或声音输出正确。
+
+主机整核构建、config 审计和 FIT 三个 component 的解包逐字节比较均已通过：
+
+```text
+297f3705058c04f1222b5ae494ed4b91eccd03ef32d74512363bdb23bf53d50f  kernel/overlays/linux-6.18.42/sound/soc/codecs/ak7755.c
+972f9de6dd15ca5d6a6ed199cec66cb09559ee1ad8f94f1fe319d7a2ace2ae4a  kernel-mainline-6.18-ak7755-dsp-run-a6.config
+7d645658443dc64ee39cbb20266dc57494b79dd63d32983d1684b02c2e9bf606  zImage-mainline-6.18-ak7755-dsp-run-a6
+d624e87edbd1a124283d7ba31169b2847f62cf924a719ac6a4129419560c82c3  r1-initramfs-mainline-6.18-ak7755-dsp-run-a6.cpio.gz
+657b8f9fff815e5590abd5a63608f237e7790b005ef0019a305bcd57662533e4  rk3229-phicomm-r1-mainline-6.18-ak7755-dsp-run-a6.dtb
+bf7ff93e05c5c36407b04ebdf4dfcb16a32c86ca00cbfd348f4d5638721733de  r1-linux-mainline-6.18-ak7755-dsp-run-a6.itb
+```
+
+FIT 为 14,345,092 bytes，低于 16 MiB DFU RAM alternate。
+
+#### A6 RAM-only 实机通过
+
+实机版本为 `6.18.42-phicomm-r1-ak7755-dsp-run-a6-dirty`，排除了误启动 A5。测试前 debugfs
+显示 AK7755 `shutdown` high、功放 shutdown physical low/ACTIVE_LOW、功放 mute high。前台
+执行 `/bin/r1-pcm-clock-test 10` 后，driver 与工具依次输出：
+
+```text
+DSP RUN armed: C1=0x21 CF=0xc; amplifier controls unchanged
+zero_stream_seconds=10 state=running
+DSP STANDBY verified: C1=0x21 CF=0x0; amplifier controls unchanged
+zero_stream_complete xruns=0
+pcm_rc=0
+```
+
+`C1=0x21` 同时包含已配置的 32fs bit 5 和 `CKRESETN` bit 0；RUN 时 CF bits 3/2 均为 1，
+最后关闭 stream 后两位均回到 0。测试后同一 debugfs 查询再次得到功放 shutdown physical
+low/ACTIVE_LOW、mute high，证明 driver 日志中的“amplifier controls unchanged”也有独立 GPIO
+证据。启动时 PRAM CRC `0x9916`、CRAM CRC `0x4453`、ID `0x55`、ASoC card/DAI 均正常。
+
+因此 A6 已验证 AK7755 firmware→DAI→DSP RUN→零 PCM→DSP STANDBY 的可回退链，且没有 xrun、
+没有解除功放。它仍没有证明 data2 算法的输入输出 routing、DAC 模拟输出、外部波形或扬声器
+声道；在建立受控 mute/unmute 与低幅测试前继续禁止非零 PCM。
+
 ## 3. PipeWire DSP
 
 建议创建一个虚拟输出节点：
