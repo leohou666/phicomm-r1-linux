@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (GPL-2.0-or-later OR MIT)
+
+/*
+ * Phicomm R1 AK7755 ASoC enumeration/clock A4.
+ *
+ * The board exposes no physical codec MCLK.  RK3229 I2S2 provides BCLK and
+ * LRCK; AK7755 consumes those clocks and derives its internal clock from
+ * BICK.  Keep the DSP stopped and the external TPA3118D2 in shutdown/mute.
+ */
+
+#include "rk3229-phicomm-r1-open-optee-ak7755-fw-a3.dts"
+
+/ {
+	sound {
+		compatible = "phicomm,r1-ak7755-sound";
+		phicomm,cpu-dai = <&i2s2>;
+		phicomm,audio-codec = <&ak7755>;
+	};
+};
+
+&ak7755 {
+	#sound-dai-cells = <0>;
+};
+
+&i2s2 {
+	#sound-dai-cells = <0>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&r1_i2s2_rx &r1_i2s2_tx &r1_i2s2_clk &r1_i2s2_sync>;
+	rockchip,playback-channels = <2>;
+	rockchip,capture-channels = <2>;
+	status = "okay";
+};
+
+&pinctrl {
+	r1-i2s2 {
+		r1_i2s2_rx: r1-i2s2-rx {
+			rockchip,pins = <0 RK_PD2 2 &pcfg_pull_none>;
+		};
+
+		r1_i2s2_tx: r1-i2s2-tx {
+			rockchip,pins = <0 RK_PD3 2 &pcfg_pull_none>;
+		};
+
+		r1_i2s2_clk: r1-i2s2-clk {
+			rockchip,pins = <3 RK_PB3 1 &pcfg_pull_none>;
+		};
+
+		r1_i2s2_sync: r1-i2s2-sync {
+			rockchip,pins = <3 RK_PB4 1 &pcfg_pull_none>;
+		};
+	};
+};

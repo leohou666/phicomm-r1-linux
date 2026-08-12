@@ -206,6 +206,59 @@ A3 仍没有 PCM DAI 或 sound card，这是设计结果而非缺陷。A4 才注
 minimal machine card；A4 首轮继续保持功放 shutdown+mute，只以 ALSA card/PCM 枚举、
 DAI format 和 clock tree 为验收项，不进行扬声器播放。
 
+### Linux 6.18 AK7755 安全 DAI A4 主机候选
+
+原厂 DT 和启动日志共同表明 R1 的 I2S2 只有 RX、TX、BCLK、LRCK 四个 PCM pin，且原厂
+明确打印 `i2s2 has no mclk`。因此 A4 不虚构物理 MCLK：RK3229 I2S2 是 BCLK/LRCK provider，
+AK7755 是 clock consumer 并从 BICK 派生内部时钟。参考 AKM GPL driver 的 R1 匹配 data2
+路径，首版只开放 48 kHz、双声道、S16、32fs；machine driver 把 I2S controller 的内部
+clock 设为 12.288 MHz，以得到 1.536 MHz BCLK。DSP 仍停止，GPIO111/113 继续让 TPA3118D2
+保持 shutdown+mute，本阶段禁止执行播放或 capture。
+
+新增的 codec DAI 名为 `ak7755-AIF1`，专用 machine card 名为 `RK_AK7755`。完整 Linux
+6.18.42 构建已通过，两个新对象 `ak7755.o`、`phicomm_r1_ak7755.o` 均进入 built-in；DTB
+反编译确认 sound card、codec/CPU phandle、I2S2 pinctrl 和两个 `#sound-dai-cells = <0>`。
+FIT 总大小 14,339,592 bytes，低于 16 MiB DFU RAM alternate 上限。`dumpimage` 抽取的三个
+payload 均与输入逐字节一致：
+
+```text
+80ccc4c77348fa3da8ff4c6fe9af4bdee3edb2aed3364f12682728c9bcd75936  kernel-mainline-6.18-ak7755-dai-a4.config
+843fdecc6c383bfbeaba77ff68a11bbcf7426ef7277524e75c2da89b294f5cd7  zImage-mainline-6.18-ak7755-dai-a4
+34ace61e54e991a9fd259909accfd49af0abc1b128fa7bc068f7f62778c731c4  r1-initramfs-mainline-6.18-ak7755-dai-a4.cpio.gz
+657b8f9fff815e5590abd5a63608f237e7790b005ef0019a305bcd57662533e4  rk3229-phicomm-r1-mainline-6.18-ak7755-dai-a4.dtb
+245e705f07ad5d0ed585ad91e2a3b9c3379e199ca54205cba7bc7aa75ef32ba5  r1-linux-mainline-6.18-ak7755-dai-a4.itb
+```
+
+当前主机仍没有 `dtschema`，所以新增 binding 未执行正式 `dt_binding_check`；DT 编译和整核
+链接已经通过。以下实机结果已经把 A4 核心链从主机候选提升为 R1 验证事实，但仍不写 eMMC、
+不解除功放、不播放声音。
+
+#### A4 RAM-only 实机核心链通过
+
+实机版本为 `6.18.42-phicomm-r1-ak7755-dai-a4-dirty`，排除了误启动旧 FIT。AK7755 再次得到
+PRAM CRC `0x9916`、CRAM CRC `0x4453` 和 ID `0x55`，随后 machine/codec 两端分别报告：
+
+```text
+AK7755-I2S2: safe card ready: 48 kHz stereo S16, CPU clock provider, 32fs
+ak7755 1-0019: DAI prepared: I2S 48 kHz stereo S16, codec slave, 32fs; DSP stopped
+```
+
+`/proc/asound/cards` 枚举 card 0 `RK_AK7755`；`/proc/asound/pcm` 枚举一个 playback 与一个
+capture endpoint，link/DAI 为 `AK7755 PCM ak7755-AIF1-0`。GPIO0_D2/D3 和 GPIO3_B3/B4 已由
+`100e0000.i2s2` 以 RX/TX/CLK/SYNC 四组占用。clock summary 显示 `i2s2_frac`、`i2s2_pre`、
+`sclk_i2s2` rate 均为 12.288 MHz；因为没有打开 PCM stream，`sclk_i2s2` prepare/enable
+计数为 0，而 bus clock `hclk_i2s2_2ch` 为 1，这是预期 idle gating。
+
+安全链也由 debugfs 验证：AK7755 `shutdown` 为 high，功放 shutdown consumer 为 physical
+low (`ACTIVE LOW`)，功放 mute consumer 为 high；regulator summary 显示
+`amp_shutdown_safe -> amp_mute_safe -> 1-0019-safe` 依赖完整。Linux 6.18 debugfs 显示的是
+gpiochip 动态局部编号 `gpio-29/15/17`，不能与旧内核的全局 `35/111/113` 数字直接比较，
+应以 consumer 名、原始 DT pin 和实际电平为准。CPU online 为 `0-3`。
+
+A4 核心验收已通过。由于本轮没有提供 A4 自身的 `/proc/uptime`、Wi-Fi scan、Bluetooth LE
+scan 或四核 IPI 增长输出，稳定性与无线回归仍保持为显式待办；A3 的成功不能代替 A4 证据。
+继续禁止打开 PCM 或进行播放/capture，下一音频阶段应先设计无声时钟/数据线观测方案。
+
 ## 3. PipeWire DSP
 
 建议创建一个虚拟输出节点：

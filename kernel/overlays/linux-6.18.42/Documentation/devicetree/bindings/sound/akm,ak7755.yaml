@@ -12,11 +12,15 @@ maintainers:
 description: |
   The AK7755 is a RAM-based audio DSP with ADC, DAC and serial audio ports.
   Program and coefficient RAM images are downloaded through I2C or SPI.
-  The initial binding supports the verified I2C control path only.
+  The binding covers the verified I2C control path and the board-constrained
+  serial audio DAI. External amplifier control is board specific.
 
 properties:
   compatible:
     const: akm,ak7755
+
+  '#sound-dai-cells':
+    const: 0
 
   reg:
     maxItems: 1

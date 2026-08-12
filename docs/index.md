@@ -199,8 +199,17 @@ dependency 始终保持 TPA3118D2 shutdown+mute。主机整核构建、最终 co
 PRAM `0x9916`、CRAM `0x4453` 全部由驱动和器件硬件 CRC 链确认；Wi-Fi 扫描得到 28 个
 2.4/5 GHz BSS，Bluetooth LE 10 秒得到 20 个 report，四核 IPI 均活动。蓝牙管理初始化
 发生于 31.867 秒且之后完整执行 10 秒扫描，因此已越过 30 秒稳定性门槛。下一步为 Audio
-A4：保持功放 shutdown+mute，加入 DAI/I2S2/minimal machine card，只验证 ALSA 枚举和
-时钟合同，暂不播放声音。
+A4 主机候选现已完成：保持功放 shutdown+mute，加入受限 AK7755 DAI、I2S2 和专用 minimal
+machine card；实机证据显示板上没有 codec MCLK，因此 CPU 只提供 BCLK/LRCK，AK7755 从
+BICK 派生时钟。首版固定 48 kHz、stereo、S16、32fs，DSP 仍停止且禁止播放。整核、DTB、
+14,339,592-byte FIT、config 和三个 FIT payload 的逐字节回读均已通过；默认 DFU 脚本已钉到
+`r1-linux-mainline-6.18-ak7755-dai-a4.itb` 的 SHA-256
+`245e705f07ad5d0ed585ad91e2a3b9c3379e199ca54205cba7bc7aa75ef32ba5`。A4 随后已由 RAM-only
+实机验证核心链：正确版本后缀、PRAM/CRAM CRC、`RK_AK7755` card、双向 PCM、I2S2 四针
+pinmux、12.288 MHz clock rate、功放 shutdown+mute 以及 CPU0-3 online 均符合设计。未打开
+PCM stream 时 `sclk_i2s2` 被 gate、`hclk_i2s2_2ch` 保持工作，这是预期 idle 状态，不代表
+时钟失败。本轮没有贴出 A4 自身的 uptime >30 s 或无线扫描结果，故这些仍列为待补回归，
+不借用 A3 证据，也仍禁止播放声音。
 原厂 data2 二进制没有公开再分发许可，仍只留在 `backup/` 和本地生成的 initramfs，不能
 提交公开仓库。
 
@@ -405,6 +414,7 @@ secure INTID55/APR0 的完整定位和 clean kernel 验证。下一实机步骤�
 | `build/artifacts/r1-phicomm-r1-uboot-optee-os.config` | 上述开源 OP-TEE RAM-only 候选的完整 U-Boot 配置 |
 | `build/artifacts/mainline-first-shell-20260805.log` | 主线 Linux 6.18.42 首次进入救援 shell 的完整串口日志 |
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-fw-a3.itb` | 已实机通过的 RAM-only Audio A3：Linux 6.18.42、四核/无线回归配置、无 DAI 的 AK7755 ID + PRAM/CRAM 严格 CRC verifier；13.7 MiB，SHA-256 `3b5a4d788f7f66ab57c5dfc62d554b89754594c5a8473be2aff82a63a8e4679f` |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-dai-a4.itb` | 已实机通过 Audio A4 核心链：AK7755 + I2S2 + 专用 machine card，固定 48 kHz/stereo/S16/32fs，card/PCM/pinmux/clock/safe GPIO/四核在线已验证；DSP stopped、功放 shutdown+mute、禁止播放。14,339,592 B，SHA-256 `245e705f07ad5d0ed585ad91e2a3b9c3379e199ca54205cba7bc7aa75ef32ba5`；A4 自身 >30 s 与无线回归待补。 |
 
 ## 安全边界
 

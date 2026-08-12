@@ -1,0 +1,75 @@
+From: Phicomm R1 Linux contributors
+Subject: [PATCH] sound: soc: rockchip: add Phicomm R1 AK7755 card
+
+Wire the project-maintained Phicomm R1 machine driver into Kconfig and
+Kbuild, and update the AK7755 option help now that its deliberately narrow
+PCM DAI is available.  The sources and bindings are installed by
+prepare-kernel-source.sh before this patch is applied.
+
+---
+ sound/soc/codecs/Kconfig   | 8 ++++----
+ sound/soc/rockchip/Kconfig | 13 +++++++++++++
+ sound/soc/rockchip/Makefile | 2 ++
+ 3 files changed, 19 insertions(+), 4 deletions(-)
+
+diff --git a/sound/soc/codecs/Kconfig b/sound/soc/codecs/Kconfig
+--- a/sound/soc/codecs/Kconfig
++++ b/sound/soc/codecs/Kconfig
+@@ -594,14 +594,14 @@ config SND_SOC_AK4118
+ 	select REGMAP_I2C
+ 
+ config SND_SOC_AK7755
+-	tristate "AKM AK7755 audio DSP safe firmware verifier"
++	tristate "AKM AK7755 audio DSP"
+ 	depends on I2C
+ 	select FW_LOADER
+ 	help
+-	  Enable the initial AK7755 I2C component.  It verifies the device ID,
+-	  downloads PRAM and CRAM firmware, and checks the hardware CRC while
+-	  deliberately leaving the DSP stopped and exposing no PCM DAI.
+-	  This is a bring-up option: a later driver stage will add the normal
+-	  audio interface only after the board clock contract is verified.
++	  Enable the AK7755 I2C component.  It verifies the device ID, downloads
++	  PRAM and CRAM firmware, checks the hardware CRC, and exposes a narrowly
++	  constrained PCM DAI.  The Phicomm R1 bring-up path deliberately leaves
++	  the DSP stopped and keeps external amplifier control outside this
++	  driver.
+ 
+ config SND_SOC_AK4375
+diff --git a/sound/soc/rockchip/Kconfig b/sound/soc/rockchip/Kconfig
+--- a/sound/soc/rockchip/Kconfig
++++ b/sound/soc/rockchip/Kconfig
+@@ -46,5 +46,17 @@ config SND_SOC_ROCKCHIP_SPDIF
+ 	  Say Y or M if you want to add support for SPDIF driver for
+ 	  Rockchip SPDIF transceiver device.
+ 
++config SND_SOC_PHICOMM_R1_AK7755
++	tristate "ASoC support for the Phicomm R1 AK7755"
++	depends on OF && I2C
++	select SND_SOC_ROCKCHIP_I2S
++	select SND_SOC_AK7755
++	help
++	  Enable the deliberately narrow RK3229 I2S2 to AK7755 link used for
++	  Phicomm R1 bring-up.  The CPU supplies BCLK and LRCK; the AK7755 is a
++	  clock consumer deriving its clock from BICK.  The initial contract is
++	  fixed to 48 kHz, stereo, 16-bit PCM with a 32fs bit clock.  External
++	  amplifier control is intentionally not included.
++
+ config SND_SOC_ROCKCHIP_MAX98090
+ 	tristate "ASoC support for Rockchip boards using a MAX98090 codec"
+diff --git a/sound/soc/rockchip/Makefile b/sound/soc/rockchip/Makefile
+--- a/sound/soc/rockchip/Makefile
++++ b/sound/soc/rockchip/Makefile
+@@ -15,8 +15,10 @@ obj-$(CONFIG_SND_SOC_ROCKCHIP_I2S_TDM) += snd-soc-rockchip-i2s-tdm.o
+ 
++snd-soc-phicomm-r1-ak7755-y := phicomm_r1_ak7755.o
+ snd-soc-rockchip-max98090-y := rockchip_max98090.o
+ snd-soc-rockchip-rt5645-y := rockchip_rt5645.o
+ snd-soc-rk3288-hdmi-analog-y := rk3288_hdmi_analog.o
+ snd-soc-rk3399-gru-sound-y := rk3399_gru_sound.o
+ 
++obj-$(CONFIG_SND_SOC_PHICOMM_R1_AK7755) += snd-soc-phicomm-r1-ak7755.o
+ obj-$(CONFIG_SND_SOC_ROCKCHIP_MAX98090) += snd-soc-rockchip-max98090.o
+ obj-$(CONFIG_SND_SOC_ROCKCHIP_RT5645) += snd-soc-rockchip-rt5645.o
+-- 
+2.47.0

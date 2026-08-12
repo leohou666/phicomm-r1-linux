@@ -5,10 +5,11 @@
  * Copyright (C) 2014-2016 Asahi Kasei Microdevices Corporation
  * Copyright (C) 2026 Phicomm R1 Linux contributors
  *
- * The RAM download protocol is derived from AKM's GPL-licensed Linux 3.10
- * reference driver.  This implementation deliberately exposes no PCM DAI:
- * its first milestone is a fail-closed I2C identity and firmware/CRC
- * check.
+ * The RAM download and initial serial-port programming are derived from
+ * AKM's GPL-licensed Linux 3.10 reference driver.  The first PCM milestone
+ * is deliberately narrow and fail-closed: 48 kHz, stereo, S16, codec clock
+ * consumer, 32fs.  The DSP remains stopped and this driver does not control
+ * the external amplifier.
  */
 
 #include <linux/delay.h>
@@ -30,8 +31,25 @@
 
 #define AK7755_REG_D0_FUNCTION		0xd0
 #define AK7755_REG_CF_RESET_POWER	0xcf
+#define AK7755_REG_C0_CLOCK_SETTING1	0xc0
+#define AK7755_REG_C1_CLOCK_SETTING2	0xc1
+#define AK7755_REG_C2_SERIAL_FORMAT	0xc2
+#define AK7755_REG_C3_DSP_IO		0xc3
+#define AK7755_REG_C6_DAC_FORMAT		0xc6
+#define AK7755_REG_C7_DSP_OUTPUT		0xc7
+#define AK7755_REG_CA_CLOCK_OUTPUT	0xca
 #define AK7755_D0_CRCE			BIT(6)
 #define AK7755_CF_DLRDY			BIT(0)
+
+#define AK7755_C0_FS_MASK		GENMASK(2, 0)
+#define AK7755_C0_FS_48KHZ		0x05
+#define AK7755_C0_CLOCK_MODE_MASK	GENMASK(5, 4)
+#define AK7755_C0_SLAVE_BICK		GENMASK(5, 4)
+#define AK7755_C1_BICK_FS_MASK		GENMASK(5, 4)
+#define AK7755_C1_BICK_32FS		BIT(5)
+#define AK7755_C2_LRIF_MASK		GENMASK(5, 4)
+#define AK7755_C2_LRIF_I2S		BIT(4)
+#define AK7755_CA_BICK_LRCK_OUTPUT	GENMASK(6, 5)
 
 #define AK7755_PRAM_WRITE		0xb8
 #define AK7755_CRAM_WRITE		0xb4
@@ -266,6 +284,83 @@ static const struct snd_soc_component_driver ak7755_component_driver = {
 	.name = "ak7755",
 };
 
+static int ak7755_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
+{
+	struct ak7755_priv *ak7755 = snd_soc_component_get_drvdata(dai->component);
+	int ret;
+
+	if ((fmt & SND_SOC_DAIFMT_FORMAT_MASK) != SND_SOC_DAIFMT_I2S ||
+	    (fmt & SND_SOC_DAIFMT_INV_MASK) != SND_SOC_DAIFMT_NB_NF ||
+	    (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) != SND_SOC_DAIFMT_BC_FC)
+		return -EINVAL;
+
+	mutex_lock(&ak7755->lock);
+
+	/* R1 has no codec MCLK pin: derive the codec clock from CPU BICK. */
+	ret = ak7755_update_bits(ak7755, AK7755_REG_C0_CLOCK_SETTING1,
+				 AK7755_C0_CLOCK_MODE_MASK | AK7755_C0_FS_MASK,
+				 AK7755_C0_SLAVE_BICK | AK7755_C0_FS_48KHZ);
+	if (ret)
+		goto out_unlock;
+
+	ret = ak7755_update_bits(ak7755, AK7755_REG_CA_CLOCK_OUTPUT,
+				 AK7755_CA_BICK_LRCK_OUTPUT, 0);
+	if (ret)
+		goto out_unlock;
+
+	ret = ak7755_update_bits(ak7755, AK7755_REG_C1_CLOCK_SETTING2,
+				 AK7755_C1_BICK_FS_MASK, AK7755_C1_BICK_32FS);
+	if (ret)
+		goto out_unlock;
+
+	ret = ak7755_update_bits(ak7755, AK7755_REG_C2_SERIAL_FORMAT,
+				 AK7755_C2_LRIF_MASK, AK7755_C2_LRIF_I2S);
+	if (ret)
+		goto out_unlock;
+
+	/* Match AKM's GPL I2S/32fs serial-input and serial-output fields. */
+	ret = ak7755_update_bits(ak7755, AK7755_REG_C3_DSP_IO, 0xf0, 0xf0);
+	if (ret)
+		goto out_unlock;
+
+	ret = ak7755_update_bits(ak7755, AK7755_REG_C6_DAC_FORMAT, 0x37, 0x33);
+	if (ret)
+		goto out_unlock;
+
+	ret = ak7755_register_write(ak7755, AK7755_REG_C7_DSP_OUTPUT, 0xf3);
+
+out_unlock:
+	mutex_unlock(&ak7755->lock);
+	if (!ret)
+		dev_info_once(&ak7755->client->dev,
+			      "DAI prepared: I2S 48 kHz stereo S16, codec slave, 32fs; DSP stopped\n");
+
+	return ret;
+}
+
+static const struct snd_soc_dai_ops ak7755_dai_ops = {
+	.set_fmt = ak7755_set_dai_fmt,
+};
+
+static struct snd_soc_dai_driver ak7755_dai = {
+	.name = "ak7755-AIF1",
+	.playback = {
+		.stream_name = "Playback",
+		.channels_min = 2,
+		.channels_max = 2,
+		.rates = SNDRV_PCM_RATE_48000,
+		.formats = SNDRV_PCM_FMTBIT_S16_LE,
+	},
+	.capture = {
+		.stream_name = "Capture",
+		.channels_min = 2,
+		.channels_max = 2,
+		.rates = SNDRV_PCM_RATE_48000,
+		.formats = SNDRV_PCM_FMTBIT_S16_LE,
+	},
+	.ops = &ak7755_dai_ops,
+};
+
 static int ak7755_i2c_probe(struct i2c_client *client)
 {
 	struct ak7755_priv *ak7755;
@@ -322,7 +417,7 @@ static int ak7755_i2c_probe(struct i2c_client *client)
 
 	ret = devm_snd_soc_register_component(&client->dev,
 					      &ak7755_component_driver,
-					      NULL, 0);
+					      &ak7755_dai, 1);
 	if (ret)
 		goto err_assert_reset;
 
@@ -366,6 +461,6 @@ static struct i2c_driver ak7755_i2c_driver = {
 };
 module_i2c_driver(ak7755_i2c_driver);
 
-MODULE_DESCRIPTION("AKM AK7755 audio DSP safe firmware verifier");
+MODULE_DESCRIPTION("AKM AK7755 audio DSP safe firmware and PCM component");
 MODULE_AUTHOR("Phicomm R1 Linux contributors");
 MODULE_LICENSE("GPL");

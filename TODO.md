@@ -168,7 +168,9 @@
 - [x] 审计公开 AK7755 驱动/初始化样本：找到 AKM GPL Linux 3.10 ASoC driver，data2 命令头/CRC/DT/DAI 指纹与 R1 匹配；Ingenic/IPC-SDK 是无 firmware 的同源 OSS3 精简版；Ambarella bootloader 样本为明确专有代码
 - [x] 从 GPL Kasa driver 提取并修正 I²C、PRAM/CRAM download、CRC/资源释放边界，移植最小 Linux 6.18 component；主机整核构建、DT/FIT 审计通过，暂不带 DAI/machine driver、不解除功放 shutdown/mute
 - [x] RAM-only 实机验证 Linux 6.18 AK7755 A3：ID `0x55`、PRAM CRC `0x9916`、CRAM CRC `0x4453`；四核 IPI、>30 s、Wi-Fi/蓝牙回归通过
-- [ ] 设计 Audio A4：在功放继续 shutdown+mute 的前提下注册 AK7755 DAI、RK3229 I2S2 与最小 machine card，只验证 ALSA 枚举和时钟，不播放音频
+- [x] 设计并构建 Audio A4 主机候选：功放继续 shutdown+mute；AK7755 DAI、RK3229 I2S2 与最小 machine card 固定为 48 kHz/stereo/S16/32fs，只验证 ALSA 枚举和时钟，不播放音频
+- [x] RAM-only 实机验证 Audio A4 核心链：`RK_AK7755` card/PCM、I2S2 四针 pinmux、12.288 MHz 内部 clock contract、功放 shutdown+mute 和 CPU0-3 online；未打开 PCM、禁止播放
+- [ ] 补充 Audio A4 稳定性/无线回归证据：本版 `/proc/uptime` >30 s、Wi-Fi scan、Bluetooth LE scan 和四核 IPI 增长（A3 已通过这些项目，但不能替代 A4 证据）
 - [ ] 提取 AK7755 原厂寄存器写序列
 - [ ] 提取 PRAM/CRAM/OFREG/ACRAM 数据
 - [ ] 移植 AK7755 ASoC driver

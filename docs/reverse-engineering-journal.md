@@ -5311,3 +5311,77 @@ data2 firmware。CRC 与主机独立计算及原厂启动日志完全相同。�
 A3 阶段完成。下一步 A4 保持 GPIO111 shutdown、GPIO113 mute，不写 eMMC，先注册 AK7755
 DAI、RK3229 I2S2 和最小 machine card。验收只到 ALSA card/PCM 枚举、DAI format 与 clock
 contract；在明确 MCLK/BCLK/LRCK 和通道映射前不解除功放、不播放音频。
+
+## Linux 6.18 AK7755 安全 DAI A4 主机候选（2026-08-12）
+
+A4 继续采用 fail-closed 范围。原厂 DT 的 I2S2 pin 是 GPIO0_D2 RX、GPIO0_D3 TX、
+GPIO3_B3 BCLK、GPIO3_B4 LRCK；原厂启动日志另有 `i2s2 has no mclk`。据此实现专用
+`phicomm,r1-ak7755-sound` machine driver：CPU 是 BCLK/LRCK provider，codec 是 consumer；
+AK7755 从 BICK 派生内部时钟。首版 DAI 只接受 48 kHz、stereo、S16，machine driver 强制
+32fs，并把 I2S controller 内部 clock 请求为 12.288 MHz。DSP 仍停止，功放 shutdown/mute
+regulator 与 A3 完全继承，不提供任何解除功放的路径。
+
+可复现构建命令：
+
+```sh
+KERNEL_SRC=$PWD/build/kernel-src \
+KERNEL_BUILD=$PWD/build/kernel-6.18-ak7755-dai-a4 \
+KERNEL_EXTRA_FRAGMENTS='kernel/config/r1-5.10-clean-4core.fragment kernel/config/r1-5.10-wifi-brcmfmac-a2.fragment kernel/config/r1-5.10-wifi-regulatory-a3.fragment kernel/config/r1-5.10-bt-rk805-clkout.fragment kernel/config/r1-5.10-bt-serdev-a1r6.fragment kernel/config/r1-5.10-bt-crypto-a1r9.fragment kernel/config/r1-6.18-ak7755-fw-a3.fragment kernel/config/r1-6.18-ak7755-dai-a4.fragment' \
+BOARD_DTS=kernel/dts/rk3229-phicomm-r1-open-optee-ak7755-dai-a4.dts \
+KERNEL_ARTIFACT_TAG=mainline-6.18-ak7755-dai-a4 \
+scripts/build-kernel.sh
+
+R1_WIFI_FIRMWARE=1 R1_WIFI_REGULATORY=1 R1_BLUETOOTH_FIRMWARE=1 \
+R1_WIFI_SCAN_TOOL=build/artifacts/r1-nl80211-scan \
+R1_BLUETOOTH_MGMT_TOOL=build/artifacts/r1-btmgmt R1_AK7755_FIRMWARE=1 \
+INITRAMFS_ARTIFACT_TAG=mainline-6.18-ak7755-dai-a4 \
+scripts/build-initramfs.sh
+
+mkimage -f scripts/r1-linux-mainline-6.18-ak7755-dai-a4.its \
+  build/artifacts/r1-linux-mainline-6.18-ak7755-dai-a4.itb
+```
+
+整核链接和 DT 编译通过；最终 config 中 `SND_PCM`、`SND_SOC_ROCKCHIP_I2S`、
+`SND_SOC_AK7755`、`SND_SOC_PHICOMM_R1_AK7755` 均为 built-in。DTB 反编译确认 sound node、
+两个 DAI phandle、四个 I2S2 pin 和安全 regulator 均存在。FIT 为 14,339,592 bytes；三个
+component 经 `dumpimage` 抽出后分别与输入 `cmp` 一致。SHA-256：
+
+```text
+80ccc4c77348fa3da8ff4c6fe9af4bdee3edb2aed3364f12682728c9bcd75936  build/artifacts/kernel-mainline-6.18-ak7755-dai-a4.config
+843fdecc6c383bfbeaba77ff68a11bbcf7426ef7277524e75c2da89b294f5cd7  build/artifacts/zImage-mainline-6.18-ak7755-dai-a4
+34ace61e54e991a9fd259909accfd49af0abc1b128fa7bc068f7f62778c731c4  build/artifacts/r1-initramfs-mainline-6.18-ak7755-dai-a4.cpio.gz
+657b8f9fff815e5590abd5a63608f237e7790b005ef0019a305bcd57662533e4  build/artifacts/rk3229-phicomm-r1-mainline-6.18-ak7755-dai-a4.dtb
+245e705f07ad5d0ed585ad91e2a3b9c3379e199ca54205cba7bc7aa75ef32ba5  build/artifacts/r1-linux-mainline-6.18-ak7755-dai-a4.itb
+```
+
+当前主机缺少 `dt-doc-validate`，binding formal check 未执行。A4 尚未上板；不能把 ALSA
+card、PCM、12.288 MHz clock 或 pinmux 提前写成实机事实。下一步仅通过 eMMC 常驻 U-Boot
+的 DFU RAM alternate 启动该 FIT，保持禁止播放。
+
+## Linux 6.18 AK7755 安全 DAI A4 RAM-only 核心验证（2026-08-12）
+
+用户以默认 hash-pinned DFU 脚本启动 A4，内核明确报告
+`6.18.42-phicomm-r1-ak7755-dai-a4-dirty`，因此不是旧 FIT。PRAM 5308-byte CRC `0x9916`、
+CRAM 1113-byte CRC `0x4453`、ID `0x55` 再次通过；machine link 报告 CPU clock provider、
+48 kHz/stereo/S16/32fs，codec 报告 slave/BICK-derived、32fs、DSP stopped。
+
+实机 ALSA 和硬件映射证据：
+
+- `/proc/asound/cards`：card 0 `RK_AK7755`；
+- `/proc/asound/pcm`：`AK7755 PCM ak7755-AIF1-0`，playback 1、capture 1；
+- pinctrl：GPIO0_D2/D3、GPIO3_B3/B4 均由 `100e0000.i2s2` 占用为 RX/TX/CLK/SYNC；
+- clock：`i2s2_frac`、`i2s2_pre`、`sclk_i2s2` rate 为 12.288 MHz；没有打开 stream 时
+  `sclk_i2s2` gate 为 off，`hclk_i2s2_2ch` enable/prepare 为 1，符合 idle runtime 状态；
+- debugfs GPIO：AK7755 shutdown high、功放 shutdown physical low/ACTIVE_LOW、功放 mute high；
+- regulator summary：`amp_shutdown_safe -> amp_mute_safe -> 1-0019-safe`；
+- `/sys/devices/system/cpu/online`：`0-3`。
+
+Linux 6.18 的 debugfs 行显示动态 gpiochip 局部编号 `gpio-29/15/17`，与旧内核全局编号
+`35/111/113` 不同；consumer 名、电平和 DT pin 仍一致。一次 `devmem` 命令因串口粘贴把
+`32` 与下一条路径连成 `32/bin/busybox` 而失败，该失败不作为寄存器证据，也不影响此前
+debugfs GPIO 与 regulator 两条独立安全证据。
+
+A4 的 card/PCM、DAI contract、pinmux、clock rate、功放安全状态和四核 online 核心验收
+完成，全程未打开 PCM、未播放、未写 eMMC。本轮没有贴出 A4 自身的 `/proc/uptime`、Wi-Fi
+scan、Bluetooth LE scan 或 IPI 增长，故只把它们记录为待补回归；不能用 A3 的 >30 秒与
+无线成功替代本版证据。
