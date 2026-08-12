@@ -1,0 +1,50 @@
+/dts-v1/;
+
+/ {
+	description = "Phicomm R1 factory AK7755 zero/tone positive control A21r4";
+	#address-cells = <1>;
+
+	images {
+		kernel-1 {
+			description = "Locally preserved R1 factory Linux 3.10 kernel";
+			data = /incbin/("../backup/unpacked/boot/kernel");
+			type = "kernel";
+			arch = "arm";
+			os = "linux";
+			compression = "none";
+			load = <0x60408000>;
+			entry = <0x60408000>;
+			hash-1 { algo = "sha256"; };
+		};
+
+		ramdisk-1 {
+			description = "Read-only rescue with zero and low-level tone tools";
+			data = /incbin/("../build/artifacts/r1-initramfs-factory-3.10-ak7755-tone-a21r4.cpio.gz");
+			type = "ramdisk";
+			arch = "arm";
+			os = "linux";
+			compression = "gzip";
+			hash-1 { algo = "sha256"; };
+		};
+
+		fdt-1 {
+			description = "Factory AK7755 audio-only DT from A21r3";
+			data = /incbin/("../build/artifacts/rk3229-phicomm-r1-factory-open-optee-audio-only-a21r3.dtb");
+			type = "flat_dt";
+			arch = "arm";
+			compression = "none";
+			hash-1 { algo = "sha256"; };
+		};
+	};
+
+	configurations {
+		default = "config-1";
+
+		config-1 {
+			description = "Factory AK7755 zero/tone positive-control pair";
+			kernel = "kernel-1";
+			ramdisk = "ramdisk-1";
+			fdt = "fdt-1";
+		};
+	};
+};

@@ -3,9 +3,9 @@
 /*
  * Phicomm R1 AK7755 ASoC enumeration/clock A4.
  *
- * The board exposes no physical codec MCLK.  RK3229 I2S2 provides BCLK and
- * LRCK; AK7755 consumes those clocks and derives its internal clock from
- * BICK.  Keep the DSP stopped and the external TPA3118D2 in shutdown/mute.
+ * The recovered factory DT and verified register state show that AK7755
+ * provides BCLK and LRCK from its 12.288 MHz XTI clock.  RK3229 I2S2 is the
+ * clock consumer.  The external TPA3118D2 stays in shutdown/mute by default.
  */
 
 #include "rk3229-phicomm-r1-open-optee-ak7755-fw-a3.dts"

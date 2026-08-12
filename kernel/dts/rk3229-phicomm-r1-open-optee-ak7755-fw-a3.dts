@@ -42,6 +42,7 @@
 		safe-supply = <&amp_mute_safe>;
 		akm,pram-firmware = "ak7755_pram_data2.bin";
 		akm,cram-firmware = "ak7755_cram_data2.bin";
+		akm,ofreg-firmware = "ak7755_ofreg_data2.bin";
 	};
 };
 

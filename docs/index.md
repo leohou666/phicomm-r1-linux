@@ -253,8 +253,144 @@ shutdown 或 keepalive 超时都会先 mute、等待 10 ms，再 shutdown。测�
 和 DSP STANDBY，最终 GPIO 为 SDZ physical low、MUTE physical high。这已验证 Linux
 I2S/DMA→AK7755 data2 DSP→功放→扬声器的受控真实播放闭环，以及正常退出后的 fail-closed
 收口。用户尚未单独描述是否存在轻微 pop，因此该听感项保留为开放问题；当前仍不开放任意
-PCM、任意音量或长时 unmute。下一步先冻结并提交 A8 基线，再设计带硬上限的渐进音量/声道
-验证，或回到麦克风 capture 静音/近场声音 A/B。
+PCM、任意音量或长时 unmute。A8 已提交为 `1354638`。Audio A9 主机候选随后完成：安全门、
+DTB 与峰值均不变，只把固定信号改为左声道 750 ms、全零间隔、右声道 750 ms，用于判断
+AK7755 data2 是否保持、交换或混合 Linux 左右输入。A9 首轮实机听感认为 512 ms 间隔太短，
+无法明确分辨，且用户感觉左右可能被合并；后者仍是推断。A9r2 仅把全零间隔延长到 3.072 秒，
+不增加峰值或解除安全门。14,351,124-byte FIT 的三个 payload 已抽取逐字节比较，默认 DFU
+脚本已锁定 SHA-256 `ea5948825cd359b44df9193e6984182d914bfc62281f8e322f0006fc4868ae36`。
+用户随后确认 A9r2 的 3.072 秒数字全零阶段仍有声音。源码已确认该阶段连续写入 144 个清零
+period，但功放一直保持 UNMUTE，因此尚不能把声音归因于 buffer 错误或 GPIO 极性错误。用户
+同时确认箱体是一只低音单元加一只高音单元，并非左右立体声；L/R 定位测试暂停。下一步改为
+Audio A10 单声道诊断：相同数字全零与 DSP RUN 条件下比较功放 UNMUTE/MUTE，区分 DSP/模拟
+输出与实际 MUTE 电路差异；不提高音量。
+Audio A10 主机候选现已完成，且没有重新编译内核或加入 OFREG。它以同一低电平 1 kHz 作为
+听觉参考，随后在连续数字零下依次测试 UNMUTE→硬件 MUTE→再次 UNMUTE 三个约 2 秒窗口。
+新 FIT 已完成三个 payload 解包逐字节比较，DFU 默认已指向该 hash-pinned 候选。下一步只运行
+`/bin/r1-audio-mute-ab` 并按工具打印的四个窗口记录听感；硬件 MUTE 是否立即消音将决定继续查
+AK7755/DSP/模拟链，还是回头查 GPIO 极性和功放电路。
+A10 实机现已给出明确边界：硬件 MUTE 的约 1.965 秒窗口完全无声，再次 UNMUTE 后数字零声音
+恢复，工具完成 PASS、最终 SAFE 与 DSP STANDBY。由此 GPIO 极性和功放 MUTE 控制已验证，
+不再优先怀疑设备树静音脚错误；异常声来自功放开放时的音频链，但 A10 本身尚不能区分
+AK7755 DSP/DAC/模拟输入、板级反馈和功放自身未静音噪声。下一步可在同一安全峰值下使用短
+多音符信号判断输入内容能否被正确跟随，仍不开放任意歌曲文件或提高音量。
+Audio A11 多音符候选已经完成：4.8 秒合成 C 大调短句，峰值维持约 -60 dBFS，不接受外部音频，
+继续使用同一超时安全门。FIT payload 已逐字节核对，默认 DFU 脚本已更新到 A11。下一步运行
+`/bin/r1-melody-test`，只判断音高是否按短句变化、是否有额外固定音以及最终安全收口。
+用户的 A11 初步听感为很小声、类似收音机失台噪声，未确认旋律；未提供退出码和收口日志，
+因此不把它写成 DSP 已损坏。A12 已改为三档 300 Hz→2 kHz 扫频，峰值依次约
+-60/-54/-48 dBFS，最高仅是 A11 幅度的 4 倍并保留全部安全门。新 FIT 已完成 payload 比较，
+默认 DFU 脚本已更新；下一步分别判断三档是否能听见连续升调以及哪档开始压过底噪。
+用户现已确认 A12 三档峰值几乎没有听感变化，仍主要是小声失台噪声。源码/手册交叉审计发现
+当前 codec driver 启动了 I2S 与 DSP，却遗漏原厂 `ak7755_init_reg()` 的 DAC/Lineout power、
+DAC mux 和 Lineout volume；尤其 `CE` 保持手册规定的复位值 `0x00`，会让 DAC/Lineout 处于
+power-down/Hi-Z。问题因此优先定位在 AK7755 内部模拟输出初始化，而不是 DT、PL330、I2S2 或
+TPA3118D2 MUTE。下一步 A13 先读回寄存器，再在 MUTE 保护下用 SDIN1 直通与原厂 DSP DOUT4
+做单变量 A/B，不继续盲目增加 PCM 幅度。
+A13a 直通主机候选现已完成：启动时记录 C0/C1/C2/C3/C6/C7/C8/CE/D4/CF 基线，
+保持已验证的 I²S/32fs 格式，只建立 SDIN1→DAC L/R→Lineout1。PCM prepare 时仅为
+DAC/Lineout1 上电，ADC 不上电，codec core 释放 reset 而 DSP 继续保持 reset。C6/C8/CE/D4/C1/CF
+六项合同均必须读回匹配，否则 ALSA prepare 失败并重新断言 AK7755 PDN。新 FIT 的
+kernel/initramfs/DTB 已抽取并逐字节匹配，默认 DFU 脚本已锁定其 SHA-256。它尚未上板；
+第一次只运行原 A8 固定 -60.2 dBFS/1 s 的 `/bin/r1-audible-test`，不运行 A12 高档位。
+A13a 随后已实机通过：复位基线寄存器全 0，RUN 精确读回
+`C6=0x33 C8=0xc0 CE=0x07 D4=0x0f C1=0x21 CF=0x08`，关闭后为 `CE=0 CF=0`；
+工具 PASS，功放前后都回到 shutdown+mute。A13b 在同一内核上进一步确认 -60/-54/-48 dBFS
+三档均能听到连续升调且音量逐档增加，工具、DIRECT RUN/STANDBY 和最终 SAFE 全部通过；
+每档仍叠加固定底噪。数字幅度响应因而已成立，不优先改 D8/D9。A13c 只替换 initramfs
+测试工具，保持 kernel/DTB/codec 寄存器不变，将扫频提高为仍保守的 -48/-42/-36 dBFS，
+以判断信号能否明显压过固定底噪。
+用户随后表示提高幅度后仍有底噪，并选择先做受控音乐播放；由于没有同步提供 A13c 的完整
+状态日志，该项仍只记为主观听感。A14 已在主机完成：内置合成公版《欢乐颂》开头 16 个音符，
+约 10.9 秒、-36 dBFS，单声道内容复制到两个 I2S slot；不接受外部媒体，继续复用 A13a
+直通内核、功放独占安全门、500 ms keepalive 和自动 SAFE。FIT 三个 payload 已逐字节核对，
+默认 DFU 脚本曾锁定 A14 hash；用户随后确认播放期间底噪始终以近似固定响度叠加。
+A13a 已是 SDIN1 直通且 DSP 保持 reset，A13b 又验证扫频音高和数字幅度响应，因此不再把
+PRAM/CRAM/DSP routing 当作第一嫌疑。数据手册审计还发现 CONT1A/DA.D4 在 system reset
+期间必须为 1，而 A13a 基线为 `DA=0x00`。A15 已修正该初始化合同；两次实机日志都读回
+DA `0x10→0x30→0x10`，但用户确认 DAC soft-mute 窗口的固定底噪完全不变。结合 RUN 的
+`C8=0xc0 CE=0x07 CF=0x08` 可排除当前 OUT1 路径误混 ADC、LIN 或 DSP；数据手册又表明 C9
+控制的 analog mixer 只连接 OUT3，不连接当前 OUT1。噪声边界已移到 DAC 数字静音之后。
+A16 继续保持 zero PCM 与功放开放，并新增 C0/C9/D3 的显式清零与读回，依次关闭 DAC L/R、
+再将 Lineout1 置为 Hi-Z，并强制读回关键寄存器。
+A16 已实机退出 0，五次重复状态序列和最终 SAFE/STANDBY 均完整；第一、二窗口底噪相同，
+仅 Lineout1 Hi-Z 后底噪性质改变，故 DAC 模拟核降级，边界锁定在 Lineout1 输出阻抗与
+TPA3118 输入交界。原厂 boot/recovery DTB 与启动日志复核确认 AK7755 路径只有 PDN、SDZ、
+MUTE 三根 GPIO，当前三根物理 pin 全部对应；万能板 DT 的 ES8323 `pa-en1/pa-en2` 没有原厂
+probe/card 证据，不属于 R1 AK7755 链。A17 已据此完成主机构建：DAC 保持 soft-mute、Lineout1
+始终保持低阻输出、TPA3118 始终 enable+unmute，仅切换 D4 Lineout1 volume。A17 实机三段
+固定底噪听感基本不变；不过公开驱动原注释表明 raw 0 是 mute endpoint，并且 A17 未在每档
+重复参考音，尚未自证 D4 写值确实控制了板上可听输出。A18 已完成主机构建：用 `F/8/1`
+（0/-14/-28 dB）每档播放同一约 -36 dBFS 参考音并穿插 zero window，切档期间 DAC soft-mute，
+	其余时间 DAC 与功放保持正常工作。A18 首次实机在 PCM prepare 的 DIRECT RUN 回读合同处
+	返回 `-EIO`，尚未播放任何声音；功放已自动 SAFE，但旧失败路径又断言 codec PDN，导致本次
+	启动内无法重试。A18r2 已移除这层多余的硬复位锁存：失败仍会 DAC soft-mute、清 CE/CF 并
+	保持功放 SAFE，同时打印 C6/C8/CE/D4/DA/C1/CF 的 actual/expected 且允许重试。A18r2
+	实机首次 DIRECT RUN 已完全通过，并跑完 0 dB tone+zero；切到 D4=`0x8` 后因约 70 ms
+	控制停顿触发 PCM xrun，故 -14/-28 dB 窗口仍未完成。关闭后的 D4 保持 `0x8`，后续两次
+	prepare 的唯一合同差异均为 `D4=0x8/0xf`，精确解释了不能重测。A18r3 已令每个新 stream
+	在 DAC 静音时把 D4 归一为 `0xf`，并把该工具 PCM buffer 从约 85 ms 增至约 341 ms；默认
+	DFU 曾 hash-pinned 到 A18r3。用户现已确认三段 tone 明显逐档变小，而三段 zero 底噪音量
+	不变；D4 因而确实控制板上可听信号，固定噪声可靠位于 D4 之后。A19 不改 A18r3 kernel/DTB，
+	只新增 zero PCM `I2S running→DROP/stopped→PREPARE/running` 工具，功放和 codec route 全程
+	保持，目标是区分数字时钟耦合与 Lineout1/TPA3118 模拟后端；默认 DFU 已切换到 A19。
+	A19 已连续实机运行三次，均无 xrun/underrun、RUN/STANDBY 与最终 SAFE 成对，用户确认三个
+	窗口底噪全程相同。窗口内 `clk_summary` 又显示 `sclk_i2s2` 始终为 `1/1/Y`；源码复核表明
+	该 mclk 引用只在 runtime suspend 释放，PCM fd 保持打开时属于预期，不能代表 BICK/LRCK
+	仍在切换。随后 MMIO 已闭环：running/stopped/running 的 `XFER` 为 `3→0→3`，`DMACR`
+	为 `0x000f0110→0x000f0010→0x000f0110`，证明 DROP 确实停止 serial engine 并清 TX DMA
+	enable；三段底噪仍完全相同。结合 D4 只衰减参考音而不衰减底噪，当前边界已移到 D4 之后的
+	AK7755 Lineout1 输出级/板级模拟后端/TPA3118。下一步做原厂 Android 同硬件 idle-noise A/B，
+	并从原厂 kernel/module/用户态配置提取模拟初始化证据，不再继续盲调 PCM 格式。现已从原厂
+	3.10 zImage 解出 raw kernel、恢复 90,294 个 kallsyms 并定点反汇编 `ak7755_init_reg()`：
+	原厂与 AKM 数据手册都要求 system reset 下置 `CD.D6/DA.D4/E6.D0/EA.D7`，而当前驱动此前
+	只置 DA.D4。A20 仅补三项缺失 reset contract 并强制读回，复用既有 DT/initramfs；整核与
+	FIT payload 已核验。A20 实机已读回 `CD=c0/DA=10/E6=01/EA=80`，多次可听测试的 RUN、
+	STANDBY 与功放 SAFE 均完整，但用户确认底噪完全不变。因此缺失 reset 位是应当保留的驱动
+	修正，却不是当前固定底噪根因。下一步 A21 不再猜寄存器：使用本地保存的原厂 3.10 kernel/
+	DTB、当前不挂载存储的 rescue initramfs 和 `maxcpus=1`，从 RAM 启动原厂 AK7755/machine
+	driver 做 zero-PCM 同硬件 A/B。A21 首次实机在 eMMC 枚举后进入原厂
+	`rkpart_setup_real()`，因精简救援 cmdline 没有厂商 `mtdparts` 而把低地址 `0x9` 传给
+	`strchr()`，随后 Oops；它尚未进入音频测试，不能形成底噪结论。A21r2 不伪造 Android 分区表，
+	而在 overlay 中禁用与音频无关的三个 MMC controller；原厂 audio DT、kernel、OP-TEE 保留区、
+	单核与 rescue initramfs 均不变。A21r2 已成功进入 shell，`/proc/partitions` 为空且原厂
+	`RK_AK7755` 注册为 card 2；但测试工具固定打开 card 0，所以五秒成功 PCM 实际走 HDMI，
+	“完全无声”不是 AK7755 结果。A21r3 进一步禁用 wireless platform glue 与所有无关 machine
+	cards，只保留原厂 `rockchip-ak7755` 为 card 0；DT status、FIT payload 与专用下载哈希已核验。
+	A21r3 实机曾得到唯一声卡 `RK_AK7755`、10 秒 zero PCM 无 xrun，原厂
+	`set_dai_mute` 明确执行 unmute→mute；运行中 GPIO111=high、GPIO113=low，证明 TPA3118 已
+	enable+unmute，但用户确认全程完全安静。随后 A21r4 的非零 1 kHz tone 也完全无声，推翻了
+	“这是有效安静播放路径”的结论：原厂 kernel/driver 在救援环境中没有执行 Android HAL 路由，
+	A21r3 是假阴性，尚不能据此判断固定底噪属于当前 6.18 还是模拟后端。原厂 `codec_reg` 三态
+	快照仍是有效硬件状态证据，但只代表未完成路由的 quiet-running：
+	`C0=0d C1=01 C2=10 C6=00 C8=00 CE=0f CF=0c D4=ff DA=10`，close 后仅 DA 回到 soft-mute
+	`30`。它与 A20 DIRECT RUN 的 `C1=21 C2=00 C6=33 C8=c0 CE=07 CF=08 D4=0f` 是两套明显
+	不同的 DSP/输出状态，而非一个 reset 位。A22 逐字节复用 A20 kernel/DT，只给 initramfs 增加
+	读取 C0..EA 的只读 `r1-ak7755-regdump`；FIT payload 与默认 DFU hash 已核验，下一步抓当前
+	有底噪的 running 快照并做硬件状态差分。
+	A22 running 快照现已完成并与 DIRECT RUN 日志完全一致；相对 factory quiet-running 的差异
+	覆盖 C0/C1/C3/C6/C7/C8/CA/CE/CF/D3/D4。原厂 DT 又明确为 AK7755 link 设置
+	`bitclock-master/frame-master`，且 quiet 状态 CA=`60`、当前 CA=`00`，说明先前“无独立 MCLK
+	所以必须 CPU-master”的推断不可靠，时钟角色也要重新审计。但 factory `C8=00` 走 data2 DSP
+	path；A21r4 已确认 zero 与约 -60 dBFS tone 都完全无声。只读提取原厂 `system.img` 后，
+	`audio.primary.rk30board.so` 的 `ak7755_speaker_normal_controls` 与工厂 `/system/bin/echo_test`
+	又独立给出同一缺失合同：设置 DRAM/DLRAM/POMODE，依次下载 data2 PRAM、CRAM、OFREG，选择
+	DSP DAC，再设置两路 Lineout volume/amp。A21r5 已把这 11 项恢复为固定白名单 ALSA control
+	工具，并补入此前救援 initramfs 缺少的 OFREG data2；FIT 连续构建哈希一致且专用 DFU 已锁定。
+	A21r5 实机正向链已闭环：11 项 route 全部成功、`route_rc=0`，PRAM/CRAM/OFREG CRC 为
+	`9916/4453/96c1`，10 秒 tone 无 xrun；用户确认 1 kHz 可闻且“没啥底噪”。idle/running/close
+	三态又将有效合同固定为 AK7755 provider clock、C3/C4=`02/48`、DSP DAC、双 Lineout，stream
+	时 CE/CF=`0f/0c`，close 仅 DA 从 `10` 回 `30`。A23 已将这套合同迁入 Linux 6.18，新增
+	OFREG 严格校验、codec-provider/64fs 和完整 running readback。首个 A23 包误选了仅枚举声卡的
+	A4 DT，实机 `/bin/r1-audible-test` 因缺少 `/dev/r1-audio-safety` 以 `ENOENT` 退出，没有打开
+	功放，也没有形成听感结论。构建脚本现已改用 A8 fail-safe DT；反编译最终 DTB 已确认
+	`amp-enable-supply`、`amp-unmute-supply` 及两个可控 regulator 均存在，默认 DFU 也锁定到修正版
+	A23。修正版随后已在 R1 播放低电平测试音，用户确认声音“很干净”，旧 A22 固定底噪没有复现；
+	这是有效的实机主观听感，但本轮尚未补交退出码、FACTORY DSP readback 和最终 SAFE 日志。
+	用户随后确认给定的 60 秒 zero PCM、四核、Wi-Fi/蓝牙与功放 SAFE 回归均无问题；由于没有
+	粘贴逐项输出，只记录为用户确认，不补造计数。用户决定跳过重复的内置旋律，下一阶段直接转为
+	普通 ALSA 与 BlueZ A2DP Sink：先让内核按 PCM 生命周期自动管理 PA，再用可复现 Buildroot
+	rootfs 提供 D-Bus、BlueZ、BlueALSA 和 alsa-utils，仍先 RAM-only 验证，不写 eMMC rootfs。
 原厂 data2 二进制没有公开再分发许可，仍只留在 `backup/` 和本地生成的 initramfs，不能
 提交公开仓库。
 
@@ -464,6 +600,17 @@ secure INTID55/APR0 的完整定位和 clean kernel 验证。下一实机步骤�
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-dsp-run-a6.itb` | 已实机通过 Audio A6：PCM prepare/last-close 驱动 AK7755 RUN/STANDBY；10 秒全零流读回 `C1=0x21`、CF `0x0c→0x00`，`xruns=0`，功放前后保持 shutdown+mute。14,345,092 B，SHA-256 `bf7ff93e05c5c36407b04ebdf4dfcb16a32c86ca00cbfd348f4d5638721733de`；尚未验证算法 routing 或声音输出。 |
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-audio-soak-a7.itb` | 已实机通过 Audio A7r2：60 秒并发零 playback/capture 均无 xrun，DMA IRQ `+5622`、DSP RUN/STANDBY 成对、四核与 Wi-Fi/BR-EDR/LE 共存、功放前后安全，最终 `AUDIO_SOAK_PASS`。capture 仅见两路 peak=1 LSB，尚未证明麦克风/routing。14,348,252 B，SHA-256 `571c8927c705dd87aab9d935a30d90ddbfc3e4b47e3ad6b7f2b945af5e7c719d`。 |
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-audible-a8.itb` | 已实机通过 Audio A8：root-only/exclusive/timeout-backed 功放安全门；固定 1 kHz、约 -60 dBFS、100 ms 淡入淡出、1 秒实际外放。用户听到很小声的短音，退出码 0，DSP RUN/STANDBY 成对且最终 SDZ low/MUTE high；进程关闭、被杀或 500 ms keepalive 超时仍由内核先 mute 后 shutdown。13.7 MiB，SHA-256 `8fd60b34bbb2de433ff58bd3553ad7bad7a1f85b25b2be4dd47cee56eb98ac1b`。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-channel-a9.itb` | Audio A9r2 RAM-only 主机候选：复用 A8 fail-closed 功放门与相同约 -60 dBFS 峰值，固定播放左 750 ms、静音 3.072 s、右 750 ms，测试 AK7755 data2 声道 routing。A9 首轮 512 ms 间隔听感不明确；A9r2 三个 payload 已抽取逐字节比较。14,351,124 B，SHA-256 `ea5948825cd359b44df9193e6984182d914bfc62281f8e322f0006fc4868ae36`；尚未上板。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-direct-a13a.itb` | Audio A13a RAM-only 直通基线：SDIN1→DAC L/R→Lineout1，ADC/Lineout2 不上电、DSP 保持 reset，关键寄存器 RUN/STANDBY 强制读回；实机直通、三档幅度响应与安全收口均已通过。14,358,876 B，SHA-256 `75630c2cb15f26447827ca2be4f32b798d8dc7242f31db9acdd37ed0bdcb52b4`。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-direct-a13c.itb` | Audio A13c RAM-only 候选：逐字节复用 A13a kernel/DTB，只将受控扫频提高为 -48/-42/-36 dBFS；13.7 MiB，SHA-256 `f9ff60889e83eb3d355d0155fd06c23ead6c80a9a444328c04ba4b0b633cf071`，三个 FIT payload 已逐字节比较。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-music-a14.itb` | Audio A14 RAM-only 候选：逐字节复用 A13a kernel/DTB，新增 10.9 秒、约 -36 dBFS 的受控公版《欢乐颂》合成播放；14,359,888 B，SHA-256 `fca83d17ebec0e46ca471a94e7c1c5d7a6b8cb9201f06abcb458fbdfa0903e74`，三个 FIT payload 已逐字节比较。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-dac-mute-a15.itb` | Audio A15 已实机运行两次：DA `0x10→0x30→0x10` 均读回正确，但三个 zero-PCM 窗口的固定底噪不变；结合 C8/CE/CF 与 C0/C9/D3 合同，已排除 ADC/LIN/DSP/OUT3 mixer 误入当前 OUT1 路径。14,356,976 B，SHA-256 `b4eae0b6fd1956f22828c3cb91b6da78546e4bc05a2dbd59efa9d2f6df44dd0a`。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-analog-boundary-a16.itb` | Audio A16 RAM-only 候选：同一 zero PCM 和开放功放下，依次比较 DAC digital mute、DAC-off/Lineout1-AVDD/2、Lineout1-Hi-Z；每步强制读回 C0/C8/C9/CE/CF/D3/D4/DA。14,362,256 B，SHA-256 `9ce2ed99b338223529761f0039420fd7c5b050710e43f13dbcf2f212752efd2b`；FIT 三个 payload 与 initramfs 工具均逐字节核验。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-lineout-volume-a17.itb` | Audio A17 已实机比较：三段固定底噪听感基本不变；但 raw 0 后经复核是 mute endpoint，且工具没有逐档重复参考音，不能单独排除 D4 控制未落到实际可听路径。14,363,456 B，SHA-256 `f37cb463682ea5b4acf1baff8b71a9fbdf5acc9a5d38a1336f83a6866d10aa2b`。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-lineout-selfcheck-a18.itb` | Audio A18 首次实机在 DIRECT RUN 回读合同返回 `-EIO`，未播放声音且功放自动 SAFE；旧路径额外断言 PDN，导致同次启动不可重试。该版本仅保留为失败证据，不再作为默认下载件。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-lineout-selfcheck-a18r2.itb` | Audio A18r2 RAM-only 诊断候选：保留 D4=`F/8/1` 三档 tone+zero 自校验；失败时打印七个寄存器 actual/expected 并 soft-mute/power-down/功放 SAFE，但不再锁死 PDN。14,363,832 B，SHA-256 `f2dc1713fdaec1e73632c33787582c56deb311dc63a8f22ce50ca744463a0240`；三个 FIT payload 已逐字节核验，默认 DFU 已切换，尚待实机。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-lineout-selfcheck-a18r3.itb` | Audio A18r3 RAM-only 修正版：每个新 stream 在 DAC 静音时恢复 D4=`0xf`，自校验 PCM buffer 扩为 16384 frames，避免切档期间约 70 ms 控制停顿造成 xrun。14,363,964 B，SHA-256 `7d2672ffc49c5e0becfcd466e249a4272d6307fb7795086fc4f5a487b7b9eee5`；三个 payload 已逐字节核验，默认 DFU 已切换，尚待实机。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-i2s-clock-a19.itb` | Audio A19 RAM-only I2S clock A/B：逐字节复用 A18r3 kernel/DTB，仅新增 `/bin/r1-i2s-clock-ab`；比较 zero PCM running、PCM DROP 后 clocks stopped、PREPARE 后 running，功放/codec route 与 fail-safe 保持。14,364,660 B，SHA-256 `1bba7b088f3d6ba40c1bce737ead66266786facd4489e513a19c6565f72b7c54`；FIT payload 与工具已逐字节核验，默认 DFU 已切换。 |
 
 ## 安全边界
 

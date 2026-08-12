@@ -1,0 +1,91 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * RAM-only factory-kernel AK7755 comparison.
+ * Keep the factory AK7755 machine/codec path unchanged, while disabling
+ * storage, wireless platform glue, and unrelated sound cards.  This makes
+ * RK_AK7755 card 0 for the existing zero-PCM diagnostic.
+ */
+
+/ {
+	fragment@0 {
+		target-path = "/";
+
+		__overlay__ {
+			reserved-memory {
+				#address-cells = <1>;
+				#size-cells = <1>;
+				ranges;
+
+				optee@68400000 {
+					reg = <0x68400000 0x00300000>;
+					no-map;
+				};
+			};
+		};
+	};
+
+	fragment@1 {
+		target-path = "/chosen";
+
+		__overlay__ {
+			bootargs = "console=ttyFIQ0,1500000n8 androidboot.console=ttyFIQ0 vmalloc=496M psci=enable rockchip_jtag maxcpus=1 rdinit=/init loglevel=8 ignore_loglevel";
+		};
+	};
+
+	fragment@2 {
+		target-path = "/rksdmmc@30000000";
+		__overlay__ { status = "disabled"; };
+	};
+
+	fragment@3 {
+		target-path = "/rksdmmc@30010000";
+		__overlay__ { status = "disabled"; };
+	};
+
+	fragment@4 {
+		target-path = "/rksdmmc@30020000";
+		__overlay__ { status = "disabled"; };
+	};
+
+	fragment@5 {
+		target-path = "/wireless-wlan";
+		__overlay__ { status = "disabled"; };
+	};
+
+	fragment@6 {
+		target-path = "/wireless-bluetooth";
+		__overlay__ { status = "disabled"; };
+	};
+
+	fragment@7 {
+		target-path = "/rockchip_audio";
+		__overlay__ { status = "disabled"; };
+	};
+
+	fragment@8 {
+		target-path = "/rockchip_spdif_card";
+		__overlay__ { status = "disabled"; };
+	};
+
+	fragment@9 {
+		target-path = "/rockchip_hdmi_i2s";
+		__overlay__ { status = "disabled"; };
+	};
+
+	fragment@10 {
+		target-path = "/rockchip_nau8540";
+		__overlay__ { status = "disabled"; };
+	};
+
+	fragment@11 {
+		target-path = "/rockchip_ma4";
+		__overlay__ { status = "disabled"; };
+	};
+
+	fragment@12 {
+		target-path = "/rockchip_es8388";
+		__overlay__ { status = "disabled"; };
+	};
+};

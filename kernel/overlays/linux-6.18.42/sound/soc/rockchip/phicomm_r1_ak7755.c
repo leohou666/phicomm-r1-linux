@@ -22,14 +22,27 @@
 
 #define R1_AK7755_RATE		48000
 #define R1_AK7755_CHANNELS	2
-#define R1_AK7755_BCLK_RATIO	32
+#define R1_AK7755_BCLK_RATIO	64
 #define R1_AK7755_I2S_CLOCK	12288000
 #define R1_AUDIO_IOC_ARM_MUTED	_IO('R', 1)
 #define R1_AUDIO_IOC_UNMUTE	_IO('R', 2)
 #define R1_AUDIO_IOC_SAFE	_IO('R', 3)
 #define R1_AUDIO_IOC_KEEPALIVE	_IO('R', 4)
+#define R1_AUDIO_IOC_DAC_MUTE	_IO('R', 5)
+#define R1_AUDIO_IOC_DAC_UNMUTE	_IO('R', 6)
+#define R1_AUDIO_IOC_DAC_ANALOG_OFF _IO('R', 7)
+#define R1_AUDIO_IOC_LINEOUT_HIZ	_IO('R', 8)
+#define R1_AUDIO_IOC_LINEOUT_MINUS14DB _IO('R', 9)
+#define R1_AUDIO_IOC_LINEOUT_MINUS28DB _IO('R', 10)
 #define R1_AUDIO_ARM_TIMEOUT_MS	3000
 #define R1_AUDIO_LIVE_TIMEOUT_MS	500
+
+int ak7755_component_set_dac_mute(struct snd_soc_component *component,
+				   bool mute);
+int ak7755_component_set_analog_boundary(struct snd_soc_component *component,
+					  unsigned int boundary);
+int ak7755_component_set_lineout_volume(struct snd_soc_component *component,
+					 unsigned int stage);
 
 struct r1_ak7755_sound {
 	struct snd_soc_card card;
@@ -42,6 +55,7 @@ struct r1_ak7755_sound {
 	struct miscdevice safety_misc;
 	struct delayed_work safety_timeout;
 	struct mutex safety_lock;
+	struct snd_soc_component *codec_component;
 	atomic_t safety_open;
 	bool amp_enabled;
 	bool amp_unmuted;
@@ -168,6 +182,44 @@ static long r1_audio_safety_ioctl(struct file *file, unsigned int command,
 		mod_delayed_work(system_wq, &sound->safety_timeout,
 				 msecs_to_jiffies(R1_AUDIO_LIVE_TIMEOUT_MS));
 		break;
+	case R1_AUDIO_IOC_DAC_MUTE:
+	case R1_AUDIO_IOC_DAC_UNMUTE:
+		if (!sound->amp_unmuted || !sound->codec_component) {
+			ret = -EPERM;
+			break;
+		}
+		ret = ak7755_component_set_dac_mute(sound->codec_component,
+						 command == R1_AUDIO_IOC_DAC_MUTE);
+		if (!ret)
+			mod_delayed_work(system_wq, &sound->safety_timeout,
+					 msecs_to_jiffies(R1_AUDIO_LIVE_TIMEOUT_MS));
+		break;
+	case R1_AUDIO_IOC_DAC_ANALOG_OFF:
+	case R1_AUDIO_IOC_LINEOUT_HIZ:
+		if (!sound->amp_unmuted || !sound->codec_component) {
+			ret = -EPERM;
+			break;
+		}
+		ret = ak7755_component_set_analog_boundary(
+			sound->codec_component,
+			command == R1_AUDIO_IOC_DAC_ANALOG_OFF ? 1 : 2);
+		if (!ret)
+			mod_delayed_work(system_wq, &sound->safety_timeout,
+					 msecs_to_jiffies(R1_AUDIO_LIVE_TIMEOUT_MS));
+		break;
+	case R1_AUDIO_IOC_LINEOUT_MINUS14DB:
+	case R1_AUDIO_IOC_LINEOUT_MINUS28DB:
+		if (!sound->amp_unmuted || !sound->codec_component) {
+			ret = -EPERM;
+			break;
+		}
+		ret = ak7755_component_set_lineout_volume(
+			sound->codec_component,
+			command == R1_AUDIO_IOC_LINEOUT_MINUS14DB ? 1 : 2);
+		if (!ret)
+			mod_delayed_work(system_wq, &sound->safety_timeout,
+					 msecs_to_jiffies(R1_AUDIO_LIVE_TIMEOUT_MS));
+		break;
 	case R1_AUDIO_IOC_SAFE:
 		ret = r1_audio_force_safe_locked(sound);
 		if (!ret)
@@ -212,7 +264,7 @@ static int r1_ak7755_set_clock_contract(struct snd_soc_pcm_runtime *rtd)
 	ret = snd_soc_dai_set_bclk_ratio(cpu_dai, R1_AK7755_BCLK_RATIO);
 	if (ret)
 		return dev_err_probe(rtd->dev, ret,
-				     "failed to set 32fs bit-clock ratio\n");
+				     "failed to set 64fs bit-clock ratio\n");
 
 	ret = snd_soc_dai_set_sysclk(cpu_dai, 0, R1_AK7755_I2S_CLOCK,
 				     SND_SOC_CLOCK_OUT);
@@ -225,12 +277,15 @@ static int r1_ak7755_set_clock_contract(struct snd_soc_pcm_runtime *rtd)
 
 static int r1_ak7755_link_init(struct snd_soc_pcm_runtime *rtd)
 {
+	struct r1_ak7755_sound *sound = snd_soc_card_get_drvdata(rtd->card);
 	int ret;
+
+	sound->codec_component = snd_soc_rtd_to_codec(rtd, 0)->component;
 
 	ret = r1_ak7755_set_clock_contract(rtd);
 	if (!ret)
 		dev_info(rtd->dev,
-			 "safe card ready: 48 kHz stereo S16, CPU clock provider, 32fs\n");
+			 "safe card ready: 48 kHz stereo S16, AK7755 clock provider, 64fs\n");
 
 	return ret;
 }
@@ -302,7 +357,7 @@ static int r1_ak7755_probe(struct platform_device *pdev)
 	sound->link.init = r1_ak7755_link_init;
 	sound->link.ops = &r1_ak7755_ops;
 	sound->link.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
-				     SND_SOC_DAIFMT_CBC_CFC;
+				     SND_SOC_DAIFMT_CBP_CFP;
 
 	sound->card.name = "RK_AK7755";
 	sound->card.owner = THIS_MODULE;
@@ -310,6 +365,7 @@ static int r1_ak7755_probe(struct platform_device *pdev)
 	sound->card.dai_link = &sound->link;
 	sound->card.num_links = 1;
 	platform_set_drvdata(pdev, sound);
+	snd_soc_card_set_drvdata(&sound->card, sound);
 
 	ret = devm_snd_soc_register_card(dev, &sound->card);
 	if (ret)

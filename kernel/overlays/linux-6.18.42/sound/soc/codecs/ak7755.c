@@ -7,9 +7,11 @@
  *
  * The RAM download and initial serial-port programming are derived from
  * AKM's GPL-licensed Linux 3.10 reference driver.  The first PCM milestone
- * is deliberately narrow and fail-closed: 48 kHz, stereo, S16, codec clock
- * consumer, 32fs.  The DSP only leaves reset while a prepared PCM stream is
- * open, and this driver does not control the external amplifier.
+ * is deliberately narrow and fail-closed: 48 kHz, stereo and S16.  The R1
+ * factory media-speaker route is reproduced from device evidence: AK7755 is
+ * the BICK/LRCK provider, data2 PRAM/CRAM/OFREG are CRC-verified, and DSP
+ * DOUT4 feeds both line outputs.  This driver does not control the external
+ * amplifier.
  */
 
 #include <linux/delay.h>
@@ -35,9 +37,19 @@
 #define AK7755_REG_C1_CLOCK_SETTING2	0xc1
 #define AK7755_REG_C2_SERIAL_FORMAT	0xc2
 #define AK7755_REG_C3_DSP_IO		0xc3
+#define AK7755_REG_C4_DATA_RAM		0xc4
 #define AK7755_REG_C6_DAC_FORMAT		0xc6
 #define AK7755_REG_C7_DSP_OUTPUT		0xc7
+#define AK7755_REG_C8_DAC_INPUT		0xc8
+#define AK7755_REG_C9_ANALOG_IO		0xc9
 #define AK7755_REG_CA_CLOCK_OUTPUT	0xca
+#define AK7755_REG_CD_STATUS_DOWNLOAD	0xcd
+#define AK7755_REG_CE_POWER_MANAGEMENT	0xce
+#define AK7755_REG_D3_LINEIN_OUT3_VOLUME	0xd3
+#define AK7755_REG_D4_LINEOUT_VOLUME	0xd4
+#define AK7755_REG_DA_MUTE_CONTROL	0xda
+#define AK7755_REG_E6_REQUIRED_ONE	0xe6
+#define AK7755_REG_EA_REQUIRED_ONE	0xea
 #define AK7755_D0_CRCE			BIT(6)
 #define AK7755_CF_DLRDY			BIT(0)
 #define AK7755_CF_DSPRESETN		BIT(2)
@@ -47,6 +59,7 @@
 
 #define AK7755_C0_FS_MASK		GENMASK(2, 0)
 #define AK7755_C0_FS_48KHZ		0x05
+#define AK7755_C0_ANALOG_INPUT_ENABLE	BIT(3)
 #define AK7755_C0_CLOCK_MODE_MASK	GENMASK(5, 4)
 #define AK7755_C0_SLAVE_BICK		GENMASK(5, 4)
 #define AK7755_C1_BICK_FS_MASK		GENMASK(5, 4)
@@ -55,11 +68,38 @@
 #define AK7755_C2_LRIF_MASK		GENMASK(5, 4)
 #define AK7755_C2_LRIF_I2S		BIT(4)
 #define AK7755_CA_BICK_LRCK_OUTPUT	GENMASK(6, 5)
+#define AK7755_C6_DAC_INPUT_FORMAT_MASK	0x37
+#define AK7755_C6_DAC_INPUT_I2S		0x33
+#define AK7755_C8_DAC_INPUT_MASK		GENMASK(7, 6)
+#define AK7755_C8_DAC_INPUT_SDIN1	GENMASK(7, 6)
+#define AK7755_C9_ALL_MIXERS_OFF		0x00
+#define AK7755_CE_DAC_LEFT		BIT(0)
+#define AK7755_CE_DAC_RIGHT		BIT(1)
+#define AK7755_CE_LINEOUT1		BIT(2)
+#define AK7755_CE_DIRECT_OUTPUT_MASK	GENMASK(2, 0)
+#define AK7755_CE_DIRECT_OUTPUT_ON	GENMASK(2, 0)
+#define AK7755_CF_ADC2_RIGHT		BIT(1)
+#define AK7755_CF_LINEIN			BIT(5)
+#define AK7755_D4_LINEOUT1_VOLUME_MASK	GENMASK(3, 0)
+#define AK7755_D4_LINEOUT1_0DB		GENMASK(3, 0)
+#define AK7755_D4_LINEOUT1_MINUS14DB	0x08
+#define AK7755_D4_LINEOUT1_MINUS28DB	0x01
+#define AK7755_DA_DAC_MUTE		BIT(5)
+#define AK7755_DA_REQUIRED_ONE		BIT(4)
+#define AK7755_CD_REQUIRED_ONE		BIT(6)
+#define AK7755_E6_REQUIRED_ONE_VALUE	BIT(0)
+#define AK7755_EA_REQUIRED_ONE_VALUE	BIT(7)
+#define AK7755_ANALOG_BOUNDARY_DAC_OFF	1
+#define AK7755_ANALOG_BOUNDARY_LINEOUT_HIZ 2
+#define AK7755_LINEOUT_VOLUME_MINUS14DB	1
+#define AK7755_LINEOUT_VOLUME_MINUS28DB	2
 
 #define AK7755_PRAM_WRITE		0xb8
 #define AK7755_CRAM_WRITE		0xb4
+#define AK7755_OFREG_WRITE		0xb2
 #define AK7755_PRAM_MAX_BYTES		20483
 #define AK7755_CRAM_MAX_BYTES		6147
+#define AK7755_OFREG_MAX_BYTES		99
 
 struct ak7755_ram_image {
 	const char *property;
@@ -84,6 +124,13 @@ static const struct ak7755_ram_image ak7755_ram_images[] = {
 		.command = AK7755_CRAM_WRITE,
 		.max_size = AK7755_CRAM_MAX_BYTES,
 	},
+	{
+		.property = "akm,ofreg-firmware",
+		.default_name = "ak7755_ofreg_data2.bin",
+		.label = "OFREG",
+		.command = AK7755_OFREG_WRITE,
+		.max_size = AK7755_OFREG_MAX_BYTES,
+	},
 };
 
 struct ak7755_priv {
@@ -91,8 +138,17 @@ struct ak7755_priv {
 	struct gpio_desc *reset_gpio;
 	struct mutex lock;
 	unsigned int open_streams;
-	bool dsp_running;
+	unsigned int analog_boundary;
+	unsigned int lineout_volume_stage;
+	bool direct_output_running;
 };
+
+int ak7755_component_set_dac_mute(struct snd_soc_component *component,
+				   bool mute);
+int ak7755_component_set_analog_boundary(struct snd_soc_component *component,
+					  unsigned int boundary);
+int ak7755_component_set_lineout_volume(struct snd_soc_component *component,
+					 unsigned int stage);
 
 /* AK7755 reads use a command byte, followed by a repeated-start read. */
 static int ak7755_command_read(struct ak7755_priv *ak7755, u8 command,
@@ -157,6 +213,65 @@ static int ak7755_update_bits(struct ak7755_priv *ak7755, u8 reg,
 		return 0;
 
 	return ak7755_register_write(ak7755, reg, value);
+}
+
+/*
+ * AK7755EN datasheet 014006643-E-01 requires CD.D6, DA.D4, E6.D0 and
+ * EA.D7 to be set while CRESETN and DSPRESETN are both zero.  These bits
+ * latch until the next PDN cycle.  The recovered R1 factory kernel's
+ * ak7755_init_reg() writes the same four-bit reset contract.
+ */
+static int ak7755_apply_system_reset_contract(struct ak7755_priv *ak7755)
+{
+	u8 cd, da, e6, ea;
+	int ret;
+
+	/* Reserved fields are required to be zero; CD.D7 is read-only STO. */
+	ret = ak7755_register_write(ak7755, AK7755_REG_CD_STATUS_DOWNLOAD,
+				    AK7755_CD_REQUIRED_ONE);
+	if (ret)
+		return ret;
+	ret = ak7755_update_bits(ak7755, AK7755_REG_DA_MUTE_CONTROL,
+				 AK7755_DA_REQUIRED_ONE,
+				 AK7755_DA_REQUIRED_ONE);
+	if (ret)
+		return ret;
+	ret = ak7755_register_write(ak7755, AK7755_REG_E6_REQUIRED_ONE,
+				    AK7755_E6_REQUIRED_ONE_VALUE);
+	if (ret)
+		return ret;
+	ret = ak7755_register_write(ak7755, AK7755_REG_EA_REQUIRED_ONE,
+				    AK7755_EA_REQUIRED_ONE_VALUE);
+	if (ret)
+		return ret;
+
+	ret = ak7755_register_read(ak7755, AK7755_REG_CD_STATUS_DOWNLOAD, &cd);
+	if (ret)
+		return ret;
+	ret = ak7755_register_read(ak7755, AK7755_REG_DA_MUTE_CONTROL, &da);
+	if (ret)
+		return ret;
+	ret = ak7755_register_read(ak7755, AK7755_REG_E6_REQUIRED_ONE, &e6);
+	if (ret)
+		return ret;
+	ret = ak7755_register_read(ak7755, AK7755_REG_EA_REQUIRED_ONE, &ea);
+	if (ret)
+		return ret;
+
+	if (!(cd & AK7755_CD_REQUIRED_ONE) ||
+	    !(da & AK7755_DA_REQUIRED_ONE) ||
+	    e6 != AK7755_E6_REQUIRED_ONE_VALUE ||
+	    ea != AK7755_EA_REQUIRED_ONE_VALUE) {
+		dev_err(&ak7755->client->dev,
+			"system reset contract mismatch: CD=%#02x DA=%#02x E6=%#02x EA=%#02x\n",
+			cd, da, e6, ea);
+		return -EIO;
+	}
+
+	dev_info(&ak7755->client->dev,
+		 "system reset contract verified: CD=%#02x DA=%#02x E6=%#02x EA=%#02x\n",
+		 cd, da, e6, ea);
+	return 0;
 }
 
 static u16 ak7755_crc16(const u8 *data, size_t len)
@@ -291,6 +406,51 @@ static const struct snd_soc_component_driver ak7755_component_driver = {
 	.name = "ak7755",
 };
 
+static int ak7755_log_route_snapshot_locked(struct ak7755_priv *ak7755)
+{
+	u8 c0, c1, c2, c3, c6, c7, c8, ce, d4, da, cf;
+	int ret;
+
+	ret = ak7755_register_read(ak7755, AK7755_REG_C0_CLOCK_SETTING1, &c0);
+	if (ret)
+		return ret;
+	ret = ak7755_register_read(ak7755, AK7755_REG_C1_CLOCK_SETTING2, &c1);
+	if (ret)
+		return ret;
+	ret = ak7755_register_read(ak7755, AK7755_REG_C2_SERIAL_FORMAT, &c2);
+	if (ret)
+		return ret;
+	ret = ak7755_register_read(ak7755, AK7755_REG_C3_DSP_IO, &c3);
+	if (ret)
+		return ret;
+	ret = ak7755_register_read(ak7755, AK7755_REG_C6_DAC_FORMAT, &c6);
+	if (ret)
+		return ret;
+	ret = ak7755_register_read(ak7755, AK7755_REG_C7_DSP_OUTPUT, &c7);
+	if (ret)
+		return ret;
+	ret = ak7755_register_read(ak7755, AK7755_REG_C8_DAC_INPUT, &c8);
+	if (ret)
+		return ret;
+	ret = ak7755_register_read(ak7755, AK7755_REG_CE_POWER_MANAGEMENT, &ce);
+	if (ret)
+		return ret;
+	ret = ak7755_register_read(ak7755, AK7755_REG_D4_LINEOUT_VOLUME, &d4);
+	if (ret)
+		return ret;
+	ret = ak7755_register_read(ak7755, AK7755_REG_DA_MUTE_CONTROL, &da);
+	if (ret)
+		return ret;
+	ret = ak7755_register_read(ak7755, AK7755_REG_CF_RESET_POWER, &cf);
+	if (ret)
+		return ret;
+
+	dev_info(&ak7755->client->dev,
+		 "route baseline: C0=%#02x C1=%#02x C2=%#02x C3=%#02x C6=%#02x C7=%#02x C8=%#02x CE=%#02x D4=%#02x DA=%#02x CF=%#02x\n",
+		 c0, c1, c2, c3, c6, c7, c8, ce, d4, da, cf);
+	return 0;
+}
+
 static int ak7755_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 {
 	struct ak7755_priv *ak7755 = snd_soc_component_get_drvdata(dai->component);
@@ -298,123 +458,475 @@ static int ak7755_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 
 	if ((fmt & SND_SOC_DAIFMT_FORMAT_MASK) != SND_SOC_DAIFMT_I2S ||
 	    (fmt & SND_SOC_DAIFMT_INV_MASK) != SND_SOC_DAIFMT_NB_NF ||
-	    (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) != SND_SOC_DAIFMT_BC_FC)
+	    (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) != SND_SOC_DAIFMT_BP_FP)
 		return -EINVAL;
 
 	mutex_lock(&ak7755->lock);
-
-	/* R1 has no codec MCLK pin: derive the codec clock from CPU BICK. */
-	ret = ak7755_update_bits(ak7755, AK7755_REG_C0_CLOCK_SETTING1,
-				 AK7755_C0_CLOCK_MODE_MASK | AK7755_C0_FS_MASK,
-				 AK7755_C0_SLAVE_BICK | AK7755_C0_FS_48KHZ);
+	ret = ak7755_log_route_snapshot_locked(ak7755);
 	if (ret)
 		goto out_unlock;
 
-	ret = ak7755_update_bits(ak7755, AK7755_REG_CA_CLOCK_OUTPUT,
-				 AK7755_CA_BICK_LRCK_OUTPUT, 0);
+	/* Factory evidence: 12.288 MHz XTI master, 48 kHz, AINE enabled. */
+	ret = ak7755_register_write(ak7755, AK7755_REG_C0_CLOCK_SETTING1, 0x0d);
 	if (ret)
 		goto out_unlock;
 
-	ret = ak7755_update_bits(ak7755, AK7755_REG_C1_CLOCK_SETTING2,
-				 AK7755_C1_BICK_FS_MASK, AK7755_C1_BICK_32FS);
+	/* AK7755 drives both BICK and LRCK on the factory board. */
+	ret = ak7755_register_write(ak7755, AK7755_REG_CA_CLOCK_OUTPUT, 0x60);
 	if (ret)
 		goto out_unlock;
 
-	ret = ak7755_update_bits(ak7755, AK7755_REG_C2_SERIAL_FORMAT,
-				 AK7755_C2_LRIF_MASK, AK7755_C2_LRIF_I2S);
+	/* Factory route uses 64fs; CKRESETN remains low until PCM prepare. */
+	ret = ak7755_register_write(ak7755, AK7755_REG_C1_CLOCK_SETTING2, 0x00);
 	if (ret)
 		goto out_unlock;
 
-	/* Match AKM's GPL I2S/32fs serial-input and serial-output fields. */
-	ret = ak7755_update_bits(ak7755, AK7755_REG_C3_DSP_IO, 0xf0, 0xf0);
+	ret = ak7755_register_write(ak7755, AK7755_REG_C2_SERIAL_FORMAT, 0x10);
 	if (ret)
 		goto out_unlock;
 
-	ret = ak7755_update_bits(ak7755, AK7755_REG_C6_DAC_FORMAT, 0x37, 0x33);
+	/* Recovered Android HAL: DLRAM 2048:6144 and data2 POMODE/DRAM. */
+	ret = ak7755_register_write(ak7755, AK7755_REG_C3_DSP_IO, 0x02);
+	if (ret)
+		goto out_unlock;
+	ret = ak7755_register_write(ak7755, AK7755_REG_C4_DATA_RAM, 0x48);
 	if (ret)
 		goto out_unlock;
 
-	ret = ak7755_register_write(ak7755, AK7755_REG_C7_DSP_OUTPUT, 0xf3);
+	/* data2 DSP DOUT4 -> DAC; no direct SDIN or digital mixer selection. */
+	ret = ak7755_register_write(ak7755, AK7755_REG_C6_DAC_FORMAT, 0x00);
+	if (ret)
+		goto out_unlock;
+	ret = ak7755_register_write(ak7755, AK7755_REG_C7_DSP_OUTPUT, 0x00);
+	if (ret)
+		goto out_unlock;
+	ret = ak7755_register_write(ak7755, AK7755_REG_C8_DAC_INPUT, 0x00);
+	if (ret)
+		goto out_unlock;
+
+	/* OUT3 is the only analog mixer; keep LIN and both DAC switches open. */
+	ret = ak7755_register_write(ak7755, AK7755_REG_C9_ANALOG_IO,
+				    AK7755_C9_ALL_MIXERS_OFF);
+	if (ret)
+		goto out_unlock;
+	ret = ak7755_register_write(ak7755, AK7755_REG_D3_LINEIN_OUT3_VOLUME,
+				    0x0f);
+	if (ret)
+		goto out_unlock;
+
+	/* HAL explicitly sets both line outputs to 0 dB. */
+	ret = ak7755_register_write(ak7755, AK7755_REG_D4_LINEOUT_VOLUME, 0xff);
+	if (ret)
+		goto out_unlock;
+
+	/* CONT1A.D4 must be one during system reset; start DAC soft-muted. */
+	ret = ak7755_register_write(ak7755, AK7755_REG_DA_MUTE_CONTROL,
+				    AK7755_DA_DAC_MUTE | AK7755_DA_REQUIRED_ONE);
 
 out_unlock:
 	mutex_unlock(&ak7755->lock);
 	if (!ret)
 		dev_info_once(&ak7755->client->dev,
-			      "DAI prepared: I2S 48 kHz stereo S16, codec slave, 32fs; DSP stopped\n");
+			      "DAI prepared: I2S 48 kHz stereo S16, codec clock provider, 64fs; factory data2 DSP route staged\n");
 
 	return ret;
 }
 
-static int ak7755_set_dsp_run_locked(struct ak7755_priv *ak7755)
+static int ak7755_set_direct_output_run_locked(struct ak7755_priv *ak7755)
 {
-	u8 c1;
-	u8 cf;
+	u8 c0, c1, c2, c3, c4, c6, c7, c8, ca, ce, d3, d4, da, cf;
 	int ret;
 
-	if (ak7755->dsp_running)
+	if (ak7755->direct_output_running)
 		return 0;
 
-	/* AKM's GPL state machine releases the clock reset before DSP reset. */
+	/* Match the factory transition: clock first, then analog and DSP cores. */
 	ret = ak7755_update_bits(ak7755, AK7755_REG_C1_CLOCK_SETTING2,
 				 AK7755_C1_CKRESETN, AK7755_C1_CKRESETN);
 	if (ret)
 		return ret;
 
 	usleep_range(10000, 11000);
-	ret = ak7755_update_bits(ak7755, AK7755_REG_CF_RESET_POWER,
-				 AK7755_CF_RUN_MASK, AK7755_CF_RUN_MASK);
+	/* Factory media-speaker route powers DAC L/R plus Lineout1 and Lineout2. */
+	ret = ak7755_register_write(ak7755, AK7755_REG_CE_POWER_MANAGEMENT,
+				    0x0f);
 	if (ret)
 		return ret;
+
+	/* Run the CRC-verified data2 DSP; ADC/Linein power remains clear. */
+	ret = ak7755_register_write(ak7755, AK7755_REG_CF_RESET_POWER,
+				    AK7755_CF_RUN_MASK);
+	if (ret)
+		goto err_power_down;
 
 	usleep_range(10000, 11000);
+	ret = ak7755_register_write(ak7755, AK7755_REG_D4_LINEOUT_VOLUME, 0xff);
+	if (ret)
+		goto err_power_down;
+	msleep(10);
+
+	/* External amplifier remains hardware-muted while DAC soft mute releases. */
+	ret = ak7755_update_bits(ak7755, AK7755_REG_DA_MUTE_CONTROL,
+				 AK7755_DA_DAC_MUTE | AK7755_DA_REQUIRED_ONE,
+				 AK7755_DA_REQUIRED_ONE);
+	if (ret)
+		goto err_power_down;
+	msleep(25);
+
+	ret = ak7755_register_read(ak7755, AK7755_REG_C0_CLOCK_SETTING1, &c0);
+	if (ret)
+		goto err_power_down;
 	ret = ak7755_register_read(ak7755, AK7755_REG_C1_CLOCK_SETTING2, &c1);
 	if (ret)
-		return ret;
+		goto err_power_down;
+	ret = ak7755_register_read(ak7755, AK7755_REG_C2_SERIAL_FORMAT, &c2);
+	if (ret)
+		goto err_power_down;
+	ret = ak7755_register_read(ak7755, AK7755_REG_C3_DSP_IO, &c3);
+	if (ret)
+		goto err_power_down;
+	ret = ak7755_register_read(ak7755, AK7755_REG_C4_DATA_RAM, &c4);
+	if (ret)
+		goto err_power_down;
+	ret = ak7755_register_read(ak7755, AK7755_REG_C6_DAC_FORMAT, &c6);
+	if (ret)
+		goto err_power_down;
+	ret = ak7755_register_read(ak7755, AK7755_REG_C7_DSP_OUTPUT, &c7);
+	if (ret)
+		goto err_power_down;
+	ret = ak7755_register_read(ak7755, AK7755_REG_C8_DAC_INPUT, &c8);
+	if (ret)
+		goto err_power_down;
+	ret = ak7755_register_read(ak7755, AK7755_REG_CA_CLOCK_OUTPUT, &ca);
+	if (ret)
+		goto err_power_down;
+	ret = ak7755_register_read(ak7755, AK7755_REG_CE_POWER_MANAGEMENT, &ce);
+	if (ret)
+		goto err_power_down;
+	ret = ak7755_register_read(ak7755, AK7755_REG_D3_LINEIN_OUT3_VOLUME,
+				    &d3);
+	if (ret)
+		goto err_power_down;
+	ret = ak7755_register_read(ak7755, AK7755_REG_D4_LINEOUT_VOLUME, &d4);
+	if (ret)
+		goto err_power_down;
+	ret = ak7755_register_read(ak7755, AK7755_REG_DA_MUTE_CONTROL, &da);
+	if (ret)
+		goto err_power_down;
 	ret = ak7755_register_read(ak7755, AK7755_REG_CF_RESET_POWER, &cf);
 	if (ret)
-		return ret;
-	if ((c1 & AK7755_C1_CKRESETN) != AK7755_C1_CKRESETN ||
-	    (cf & AK7755_CF_RUN_MASK) != AK7755_CF_RUN_MASK)
-		return -EIO;
+		goto err_power_down;
+	if (c0 != 0x0d || c1 != 0x01 || c2 != 0x10 || c3 != 0x02 ||
+	    c4 != 0x48 || c6 || c7 || c8 || ca != 0x60 || ce != 0x0f ||
+	    d3 != 0x0f || d4 != 0xff || da != 0x10 || cf != 0x0c) {
+		dev_err(&ak7755->client->dev,
+			"FACTORY DSP RUN mismatch: C0=%02x C1=%02x C2=%02x C3=%02x C4=%02x C6=%02x C7=%02x C8=%02x CA=%02x CE=%02x D3=%02x D4=%02x DA=%02x CF=%02x\n",
+			c0, c1, c2, c3, c4, c6, c7, c8, ca, ce, d3, d4, da, cf);
+		ret = -EIO;
+		goto err_power_down;
+	}
 
-	ak7755->dsp_running = true;
+	ak7755->direct_output_running = true;
+	ak7755->analog_boundary = 0;
+	ak7755->lineout_volume_stage = 0;
 	dev_info(&ak7755->client->dev,
-		 "DSP RUN armed: C1=%#02x CF=%#02x; amplifier controls unchanged\n",
-		 c1, cf);
+		 "FACTORY DSP RUN verified: C0=%02x C1=%02x C2=%02x C3=%02x C4=%02x C6=%02x C7=%02x C8=%02x CA=%02x CE=%02x D3=%02x D4=%02x DA=%02x CF=%02x\n",
+		 c0, c1, c2, c3, c4, c6, c7, c8, ca, ce, d3, d4, da, cf);
 	return 0;
+
+err_power_down:
+	/* Best-effort fail-safe: mute before reset/power-down on any start error. */
+	if (!ak7755_update_bits(ak7755, AK7755_REG_DA_MUTE_CONTROL,
+				 AK7755_DA_DAC_MUTE | AK7755_DA_REQUIRED_ONE,
+				 AK7755_DA_DAC_MUTE | AK7755_DA_REQUIRED_ONE))
+		msleep(25);
+	ak7755_update_bits(ak7755, AK7755_REG_CF_RESET_POWER,
+			   AK7755_CF_RUN_MASK, 0);
+	ak7755_register_write(ak7755, AK7755_REG_CE_POWER_MANAGEMENT, 0);
+	return ret;
 }
 
-static int ak7755_set_dsp_standby_locked(struct ak7755_priv *ak7755)
+static int ak7755_set_direct_output_standby_locked(struct ak7755_priv *ak7755)
 {
-	u8 c1;
-	u8 cf;
+	u8 ce, cf;
 	int ret;
 
-	if (!ak7755->dsp_running)
+	if (!ak7755->direct_output_running)
 		return 0;
 
-	/* Keep CKRESETN asserted, but hold both codec and DSP cores in reset. */
+	/* Soft-mute the running DAC before reset and analog power-down. */
+	ret = ak7755_update_bits(ak7755, AK7755_REG_DA_MUTE_CONTROL,
+				 AK7755_DA_DAC_MUTE | AK7755_DA_REQUIRED_ONE,
+				 AK7755_DA_DAC_MUTE | AK7755_DA_REQUIRED_ONE);
+	if (ret)
+		return ret;
+	msleep(25);
+
+	/* Hold codec and DSP cores in reset before powering down the analog path. */
 	ret = ak7755_update_bits(ak7755, AK7755_REG_CF_RESET_POWER,
 				 AK7755_CF_RUN_MASK, 0);
 	if (ret)
 		return ret;
 
 	usleep_range(10000, 11000);
-	ret = ak7755_register_read(ak7755, AK7755_REG_C1_CLOCK_SETTING2, &c1);
+	ret = ak7755_register_write(ak7755, AK7755_REG_CE_POWER_MANAGEMENT, 0);
+	if (ret)
+		return ret;
+
+	usleep_range(1000, 2000);
+	ret = ak7755_register_read(ak7755, AK7755_REG_CE_POWER_MANAGEMENT, &ce);
 	if (ret)
 		return ret;
 	ret = ak7755_register_read(ak7755, AK7755_REG_CF_RESET_POWER, &cf);
 	if (ret)
 		return ret;
-	if (cf & AK7755_CF_RUN_MASK)
+	if (ce || (cf & AK7755_CF_RUN_MASK))
 		return -EIO;
 
-	ak7755->dsp_running = false;
+	ak7755->direct_output_running = false;
+	ak7755->analog_boundary = 0;
+	ak7755->lineout_volume_stage = 0;
 	dev_info(&ak7755->client->dev,
-		 "DSP STANDBY verified: C1=%#02x CF=%#02x; amplifier controls unchanged\n",
-		 c1, cf);
+		 "FACTORY DSP STANDBY verified: CE=%#02x CF=%#02x; amplifier controls unchanged\n",
+		 ce, cf);
 	return 0;
 }
+
+int ak7755_component_set_dac_mute(struct snd_soc_component *component,
+				   bool mute)
+{
+	struct ak7755_priv *ak7755 = snd_soc_component_get_drvdata(component);
+	u8 da;
+	int ret;
+
+	mutex_lock(&ak7755->lock);
+	if (!ak7755->direct_output_running || ak7755->analog_boundary) {
+		ret = -EPERM;
+		goto out_unlock;
+	}
+
+	ret = ak7755_update_bits(ak7755, AK7755_REG_DA_MUTE_CONTROL,
+				 AK7755_DA_DAC_MUTE | AK7755_DA_REQUIRED_ONE,
+				 AK7755_DA_REQUIRED_ONE |
+				 (mute ? AK7755_DA_DAC_MUTE : 0));
+	if (ret)
+		goto out_unlock;
+	msleep(25);
+
+	ret = ak7755_register_read(ak7755, AK7755_REG_DA_MUTE_CONTROL, &da);
+	if (ret)
+		goto out_unlock;
+	if ((da & (AK7755_DA_DAC_MUTE | AK7755_DA_REQUIRED_ONE)) !=
+	    (AK7755_DA_REQUIRED_ONE | (mute ? AK7755_DA_DAC_MUTE : 0))) {
+		ret = -EIO;
+		goto out_unlock;
+	}
+
+	dev_info(&ak7755->client->dev, "DAC soft mute=%u verified: DA=%#02x\n",
+		 mute, da);
+
+out_unlock:
+	mutex_unlock(&ak7755->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(ak7755_component_set_dac_mute);
+
+int ak7755_component_set_lineout_volume(struct snd_soc_component *component,
+					 unsigned int stage)
+{
+	struct ak7755_priv *ak7755 = snd_soc_component_get_drvdata(component);
+	const char *label;
+	u8 c0, c8, c9, ce, cf, d3, d4, da;
+	u8 expected_current;
+	u8 target;
+	int ret;
+
+	if (stage == AK7755_LINEOUT_VOLUME_MINUS14DB) {
+		expected_current = AK7755_D4_LINEOUT1_0DB;
+		target = AK7755_D4_LINEOUT1_MINUS14DB;
+		label = "minus14db";
+	} else if (stage == AK7755_LINEOUT_VOLUME_MINUS28DB) {
+		expected_current = AK7755_D4_LINEOUT1_MINUS14DB;
+		target = AK7755_D4_LINEOUT1_MINUS28DB;
+		label = "minus28db";
+	} else {
+		return -EINVAL;
+	}
+
+	mutex_lock(&ak7755->lock);
+	if (!ak7755->direct_output_running || ak7755->analog_boundary ||
+	    ak7755->lineout_volume_stage != stage - 1) {
+		ret = -EPERM;
+		goto out_unlock;
+	}
+
+	ret = ak7755_register_read(ak7755, AK7755_REG_DA_MUTE_CONTROL, &da);
+	if (ret)
+		goto out_unlock;
+	ret = ak7755_register_read(ak7755, AK7755_REG_D4_LINEOUT_VOLUME, &d4);
+	if (ret)
+		goto out_unlock;
+	if ((da & (AK7755_DA_DAC_MUTE | AK7755_DA_REQUIRED_ONE)) !=
+		   (AK7755_DA_DAC_MUTE | AK7755_DA_REQUIRED_ONE) ||
+	    (d4 & AK7755_D4_LINEOUT1_VOLUME_MASK) != expected_current) {
+		ret = -EPERM;
+		goto out_unlock;
+	}
+
+	ret = ak7755_update_bits(ak7755, AK7755_REG_D4_LINEOUT_VOLUME,
+				 AK7755_D4_LINEOUT1_VOLUME_MASK, target);
+	if (ret)
+		goto out_unlock;
+	msleep(10);
+
+	ret = ak7755_register_read(ak7755, AK7755_REG_C0_CLOCK_SETTING1, &c0);
+	if (ret)
+		goto out_unlock;
+	ret = ak7755_register_read(ak7755, AK7755_REG_C8_DAC_INPUT, &c8);
+	if (ret)
+		goto out_unlock;
+	ret = ak7755_register_read(ak7755, AK7755_REG_C9_ANALOG_IO, &c9);
+	if (ret)
+		goto out_unlock;
+	ret = ak7755_register_read(ak7755, AK7755_REG_CE_POWER_MANAGEMENT, &ce);
+	if (ret)
+		goto out_unlock;
+	ret = ak7755_register_read(ak7755, AK7755_REG_CF_RESET_POWER, &cf);
+	if (ret)
+		goto out_unlock;
+	ret = ak7755_register_read(ak7755, AK7755_REG_D3_LINEIN_OUT3_VOLUME,
+				    &d3);
+	if (ret)
+		goto out_unlock;
+	ret = ak7755_register_read(ak7755, AK7755_REG_D4_LINEOUT_VOLUME, &d4);
+	if (ret)
+		goto out_unlock;
+	ret = ak7755_register_read(ak7755, AK7755_REG_DA_MUTE_CONTROL, &da);
+	if (ret)
+		goto out_unlock;
+
+	if ((c0 & AK7755_C0_ANALOG_INPUT_ENABLE) ||
+	    c8 != AK7755_C8_DAC_INPUT_SDIN1 || c9 ||
+	    ce != AK7755_CE_DIRECT_OUTPUT_ON ||
+	    (cf & (AK7755_CF_LINEIN | AK7755_CF_RUN_MASK |
+		   AK7755_CF_ADC2_RIGHT)) != AK7755_CF_CRESETN || d3 ||
+	    (d4 & AK7755_D4_LINEOUT1_VOLUME_MASK) != target ||
+	    (da & (AK7755_DA_DAC_MUTE | AK7755_DA_REQUIRED_ONE)) !=
+		   (AK7755_DA_DAC_MUTE | AK7755_DA_REQUIRED_ONE)) {
+		ret = -EIO;
+		goto out_unlock;
+	}
+
+	ak7755->lineout_volume_stage = stage;
+	dev_info(&ak7755->client->dev,
+		 "LINEOUT VOLUME stage=%s C0=%#02x C8=%#02x C9=%#02x CE=%#02x CF=%#02x D3=%#02x D4=%#02x DA=%#02x\n",
+		 label, c0, c8, c9, ce, cf, d3, d4, da);
+
+out_unlock:
+	mutex_unlock(&ak7755->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(ak7755_component_set_lineout_volume);
+
+int ak7755_component_set_analog_boundary(struct snd_soc_component *component,
+					  unsigned int boundary)
+{
+	struct ak7755_priv *ak7755 = snd_soc_component_get_drvdata(component);
+	u8 c0, c8, c9, ce, cf, d3, d4, da;
+	u8 expected_ce;
+	int ret;
+
+	mutex_lock(&ak7755->lock);
+	if (!ak7755->direct_output_running || ak7755->lineout_volume_stage) {
+		ret = -EPERM;
+		goto out_unlock;
+	}
+
+	if (boundary == AK7755_ANALOG_BOUNDARY_DAC_OFF) {
+		if (ak7755->analog_boundary) {
+			ret = -EPERM;
+			goto out_unlock;
+		}
+		ret = ak7755_update_bits(ak7755, AK7755_REG_DA_MUTE_CONTROL,
+					 AK7755_DA_DAC_MUTE |
+					 AK7755_DA_REQUIRED_ONE,
+					 AK7755_DA_DAC_MUTE |
+					 AK7755_DA_REQUIRED_ONE);
+		if (ret)
+			goto out_unlock;
+		msleep(25);
+		ret = ak7755_update_bits(ak7755,
+					 AK7755_REG_CE_POWER_MANAGEMENT,
+					 AK7755_CE_DAC_LEFT |
+					 AK7755_CE_DAC_RIGHT, 0);
+		expected_ce = AK7755_CE_LINEOUT1;
+	} else if (boundary == AK7755_ANALOG_BOUNDARY_LINEOUT_HIZ) {
+		if (ak7755->analog_boundary != AK7755_ANALOG_BOUNDARY_DAC_OFF) {
+			ret = -EPERM;
+			goto out_unlock;
+		}
+		ret = ak7755_update_bits(ak7755,
+					 AK7755_REG_CE_POWER_MANAGEMENT,
+					 AK7755_CE_LINEOUT1, 0);
+		expected_ce = 0;
+	} else {
+		ret = -EINVAL;
+		goto out_unlock;
+	}
+	if (ret)
+		goto out_unlock;
+	msleep(10);
+
+	ret = ak7755_register_read(ak7755, AK7755_REG_C0_CLOCK_SETTING1, &c0);
+	if (ret)
+		goto out_unlock;
+	ret = ak7755_register_read(ak7755, AK7755_REG_C8_DAC_INPUT, &c8);
+	if (ret)
+		goto out_unlock;
+	ret = ak7755_register_read(ak7755, AK7755_REG_C9_ANALOG_IO, &c9);
+	if (ret)
+		goto out_unlock;
+	ret = ak7755_register_read(ak7755, AK7755_REG_CE_POWER_MANAGEMENT, &ce);
+	if (ret)
+		goto out_unlock;
+	ret = ak7755_register_read(ak7755, AK7755_REG_CF_RESET_POWER, &cf);
+	if (ret)
+		goto out_unlock;
+	ret = ak7755_register_read(ak7755, AK7755_REG_D3_LINEIN_OUT3_VOLUME,
+				    &d3);
+	if (ret)
+		goto out_unlock;
+	ret = ak7755_register_read(ak7755, AK7755_REG_D4_LINEOUT_VOLUME, &d4);
+	if (ret)
+		goto out_unlock;
+	ret = ak7755_register_read(ak7755, AK7755_REG_DA_MUTE_CONTROL, &da);
+	if (ret)
+		goto out_unlock;
+
+	if ((c0 & AK7755_C0_ANALOG_INPUT_ENABLE) ||
+	    c8 != AK7755_C8_DAC_INPUT_SDIN1 || c9 || ce != expected_ce ||
+	    (cf & (AK7755_CF_LINEIN | AK7755_CF_RUN_MASK |
+		   AK7755_CF_ADC2_RIGHT)) != AK7755_CF_CRESETN || d3 ||
+	    (d4 & AK7755_D4_LINEOUT1_VOLUME_MASK) !=
+		   AK7755_D4_LINEOUT1_0DB ||
+	    (da & (AK7755_DA_DAC_MUTE | AK7755_DA_REQUIRED_ONE)) !=
+		   (AK7755_DA_DAC_MUTE | AK7755_DA_REQUIRED_ONE)) {
+		ret = -EIO;
+		goto out_unlock;
+	}
+
+	ak7755->analog_boundary = boundary;
+	dev_info(&ak7755->client->dev,
+		 "ANALOG BOUNDARY stage=%s C0=%#02x C8=%#02x C9=%#02x CE=%#02x CF=%#02x D3=%#02x D4=%#02x DA=%#02x\n",
+		 boundary == AK7755_ANALOG_BOUNDARY_DAC_OFF ?
+		 "dac-off-lineout-vmid" : "lineout-hiz",
+		 c0, c8, c9, ce, cf, d3, d4, da);
+
+out_unlock:
+	mutex_unlock(&ak7755->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(ak7755_component_set_analog_boundary);
 
 static int ak7755_dai_startup(struct snd_pcm_substream *substream,
 			      struct snd_soc_dai *dai)
@@ -435,13 +947,12 @@ static int ak7755_dai_prepare(struct snd_pcm_substream *substream,
 	int ret;
 
 	mutex_lock(&ak7755->lock);
-	ret = ak7755_set_dsp_run_locked(ak7755);
+	ret = ak7755_set_direct_output_run_locked(ak7755);
 	mutex_unlock(&ak7755->lock);
-	if (ret) {
+	if (ret)
 		dev_err(&ak7755->client->dev,
-			"failed to verify DSP RUN, asserting reset: %d\n", ret);
-		gpiod_set_value_cansleep(ak7755->reset_gpio, 1);
-	}
+			"failed to verify factory DSP RUN; codec soft-muted and powered down, retry remains available: %d\n",
+			ret);
 
 	return ret;
 }
@@ -458,13 +969,13 @@ static void ak7755_dai_shutdown(struct snd_pcm_substream *substream,
 
 	ak7755->open_streams--;
 	if (!ak7755->open_streams)
-		ret = ak7755_set_dsp_standby_locked(ak7755);
+		ret = ak7755_set_direct_output_standby_locked(ak7755);
 
 out_unlock:
 	mutex_unlock(&ak7755->lock);
 	if (ret) {
 		dev_err(&ak7755->client->dev,
-			"failed to verify DSP STANDBY, asserting reset: %d\n", ret);
+			"failed to verify factory DSP STANDBY, asserting reset: %d\n", ret);
 		gpiod_set_value_cansleep(ak7755->reset_gpio, 1);
 	}
 }
@@ -541,8 +1052,20 @@ static int ak7755_i2c_probe(struct i2c_client *client)
 		goto err_assert_reset;
 	}
 
+	ret = ak7755_apply_system_reset_contract(ak7755);
+	if (ret)
+		goto err_assert_reset;
+
 	ret = ak7755_update_bits(ak7755, AK7755_REG_D0_FUNCTION,
 				 AK7755_D0_CRCE, AK7755_D0_CRCE);
+	if (ret)
+		goto err_assert_reset;
+
+	/* Recovered Android HAL contract, required before all data2 downloads. */
+	ret = ak7755_register_write(ak7755, AK7755_REG_C3_DSP_IO, 0x02);
+	if (ret)
+		goto err_assert_reset;
+	ret = ak7755_register_write(ak7755, AK7755_REG_C4_DATA_RAM, 0x48);
 	if (ret)
 		goto err_assert_reset;
 
@@ -559,7 +1082,7 @@ static int ak7755_i2c_probe(struct i2c_client *client)
 		goto err_assert_reset;
 
 	dev_info(&client->dev,
-		 "AK7755EN ID 0x55; firmware verified, DSP waits for PCM prepare\n");
+		 "AK7755EN ID 0x55; PRAM/CRAM/OFREG verified, factory DSP route waits for PCM prepare\n");
 	return 0;
 
 err_assert_reset:

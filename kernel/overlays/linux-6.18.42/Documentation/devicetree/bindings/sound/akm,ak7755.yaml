@@ -45,6 +45,11 @@ properties:
     $ref: /schemas/types.yaml#/definitions/string
     default: ak7755_cram_data2.bin
 
+  akm,ofreg-firmware:
+    description: Output-register RAM image including its RAM-write command header.
+    $ref: /schemas/types.yaml#/definitions/string
+    default: ak7755_ofreg_data2.bin
+
 required:
   - compatible
   - reg
@@ -65,6 +70,7 @@ examples:
             safe-supply = <&amp_mute_safe>;
             akm,pram-firmware = "ak7755_pram_data2.bin";
             akm,cram-firmware = "ak7755_cram_data2.bin";
+            akm,ofreg-firmware = "ak7755_ofreg_data2.bin";
         };
     };
 ...

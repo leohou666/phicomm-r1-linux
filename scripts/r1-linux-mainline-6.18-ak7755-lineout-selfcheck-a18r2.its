@@ -1,0 +1,49 @@
+/dts-v1/;
+
+/ {
+	description = "Phicomm R1 Linux 6.18 AK7755 Lineout1 D4 self-check A18r2";
+	#address-cells = <1>;
+
+	images {
+		kernel-1 {
+			description = "Linux 6.18.42 R1 AK7755 retryable Lineout1 D4 self-check";
+			data = /incbin/("../build/artifacts/zImage-mainline-6.18-ak7755-lineout-selfcheck-a18r2");
+			type = "kernel";
+			arch = "arm";
+			os = "linux";
+			compression = "none";
+			load = <0x62000000>;
+			entry = <0x62000000>;
+			hash-1 { algo = "sha256"; };
+		};
+
+		ramdisk-1 {
+			description = "R1 rescue initramfs with AK7755 Lineout1 D4 self-check";
+			data = /incbin/("../build/artifacts/r1-initramfs-mainline-6.18-ak7755-lineout-selfcheck-a18r2.cpio.gz");
+			type = "ramdisk";
+			arch = "arm";
+			os = "linux";
+			compression = "gzip";
+			hash-1 { algo = "sha256"; };
+		};
+
+		fdt-1 {
+			description = "Phicomm R1 AK7755 timeout-backed amplifier gate";
+			data = /incbin/("../build/artifacts/rk3229-phicomm-r1-mainline-6.18-ak7755-lineout-selfcheck-a18r2.dtb");
+			type = "flat_dt";
+			arch = "arm";
+			compression = "none";
+			hash-1 { algo = "sha256"; };
+		};
+	};
+
+	configurations {
+		default = "config-1";
+		config-1 {
+			description = "R1 retryable AK7755 D4 0/-14/-28 dB self-check";
+			kernel = "kernel-1";
+			ramdisk = "ramdisk-1";
+			fdt = "fdt-1";
+		};
+	};
+};

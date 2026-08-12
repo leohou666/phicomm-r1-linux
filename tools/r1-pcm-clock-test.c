@@ -79,6 +79,38 @@ _Static_assert(sizeof(struct snd_pcm_hw_params) == 604,
 
 static u8 zero_period[PCM_PERIOD_BYTES];
 
+#ifdef R1_FACTORY_TONE_TEST
+typedef short s16;
+
+static const s16 sine_1khz[48] = {
+	0, 4, 8, 12, 16, 20, 23, 26, 28, 30, 31, 32,
+	32, 32, 31, 30, 28, 26, 23, 20, 16, 12, 8, 4,
+	0, -4, -8, -12, -16, -20, -23, -26, -28, -30, -31, -32,
+	-32, -32, -31, -30, -28, -26, -23, -20, -16, -12, -8, -4,
+};
+
+static void prepare_period(void)
+{
+	s16 *samples = (s16 *)zero_period;
+	u32 frame;
+	u32 phase = 0;
+
+	for (frame = 0; frame < PCM_PERIOD_FRAMES; frame++) {
+		s16 sample = sine_1khz[phase];
+
+		samples[frame * 2U] = sample;
+		samples[frame * 2U + 1U] = sample;
+		phase++;
+		if (phase == 48U)
+			phase = 0;
+	}
+}
+#else
+static void prepare_period(void)
+{
+}
+#endif
+
 static long syscall1(long nr, long a0)
 {
 	register long r0 __asm__("r0") = a0;
@@ -275,7 +307,12 @@ static __used __noinline int main(int argc, char **argv)
 		}
 	}
 
+#ifdef R1_FACTORY_TONE_TEST
+	putstr("WARNING: factory-driver positive-control tone, 1 kHz about -60 dBFS.\n");
+#else
 	putstr("SAFETY: zero PCM only; verify amplifier remains shutdown+mute.\n");
+#endif
+	prepare_period();
 	fd = syscall3(5, (long)"/dev/snd/pcmC0D0p", O_WRONLY, 0);
 	if (fd < 0) {
 		put_error("open /dev/snd/pcmC0D0p", fd);
@@ -287,7 +324,11 @@ static __used __noinline int main(int argc, char **argv)
 	}
 
 	putstr("pcm=48kHz stereo S16_LE access=RW_INTERLEAVED period=1024 buffer=4096\n");
+#ifdef R1_FACTORY_TONE_TEST
+	putstr("tone_stream_seconds=");
+#else
 	putstr("zero_stream_seconds=");
+#endif
 	put_u32(seconds);
 	putstr(" state=running\n");
 
@@ -323,7 +364,11 @@ static __used __noinline int main(int argc, char **argv)
 
 	(void)syscall3(54, fd, SNDRV_PCM_IOCTL_DROP, 0);
 	(void)syscall1(6, fd);
+#ifdef R1_FACTORY_TONE_TEST
+	putstr("tone_stream_complete xruns=");
+#else
 	putstr("zero_stream_complete xruns=");
+#endif
 	put_u32(xruns);
 	putstr("\n");
 	return xruns ? 1 : 0;

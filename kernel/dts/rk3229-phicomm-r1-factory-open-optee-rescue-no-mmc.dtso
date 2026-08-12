@@ -1,0 +1,62 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * RAM-only factory-kernel audio diagnostic overlay.
+ *
+ * The vendor 3.10 MMC partition parser dereferences an invalid low pointer
+ * when its proprietary mtdparts command line is absent.  Storage and SDIO
+ * are irrelevant to the codec-driver comparison, so disable all three MMC
+ * controllers instead of restoring an Android partition contract.
+ */
+
+/ {
+	fragment@0 {
+		target-path = "/";
+
+		__overlay__ {
+			reserved-memory {
+				#address-cells = <1>;
+				#size-cells = <1>;
+				ranges;
+
+				optee@68400000 {
+					reg = <0x68400000 0x00300000>;
+					no-map;
+				};
+			};
+		};
+	};
+
+	fragment@1 {
+		target-path = "/chosen";
+
+		__overlay__ {
+			bootargs = "console=ttyFIQ0,1500000n8 androidboot.console=ttyFIQ0 vmalloc=496M psci=enable rockchip_jtag maxcpus=1 rdinit=/init loglevel=8 ignore_loglevel";
+		};
+	};
+
+	fragment@2 {
+		target-path = "/rksdmmc@30000000";
+
+		__overlay__ {
+			status = "disabled";
+		};
+	};
+
+	fragment@3 {
+		target-path = "/rksdmmc@30010000";
+
+		__overlay__ {
+			status = "disabled";
+		};
+	};
+
+	fragment@4 {
+		target-path = "/rksdmmc@30020000";
+
+		__overlay__ {
+			status = "disabled";
+		};
+	};
+};
