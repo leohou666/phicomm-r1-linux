@@ -107,6 +107,52 @@ A1r6 随后实机成功创建 `hci0` 并识别 BCM4345C0；UART 双向、RTS/CTS
 A1r7 实机已完成 HCD Patch：controller 从 `build 0000` 更新到 `build 0124`，`hci0` 正常存在，
 UART patchram 双向传输量与日志一致。Bluetooth 内核 bring-up 阶段完成；下一步是加入最小 BlueZ/
 management 用户空间，先验证 controller power、LE/BR-EDR 扫描，再进入配对与 A2DP。
+A1r8 已在主机端加入约 9 KiB、无 libc/BlueZ daemon 依赖的 Bluetooth Management client，支持
+controller info、power、BR/EDR inquiry 和 LE scan，并打包 Wi-Fi/蓝牙交替扫描与四核 IPI 检查脚本；
+新 FIT 已完成静态审计，尚待 RAM-only 实机验证，不能据此声称扫描或共存已通过。
+A1r8 随后已实机完成 power、capabilities、BR/EDR inquiry 和 LE scan：LE 20 秒收到 29 个广播
+report，退出码 0，current settings 为 powered+BR/EDR+LE。当前天线损坏，故该结果只验证协议与
+收发链，不用于评价 RSSI/覆盖；CMAC crypto config 和 Wi-Fi/四核长时共存仍待完成。
+用户随后确认交替扫描共存测试通过，且 Wi-Fi 继续发现 5 GHz 网络；A1r8 management 阶段完成。
+A1r9 只把原为 module、initramfs 不加载的 AES 改为 built-in，使已有 built-in CMAC 能创建
+`cmac(aes)`；最终 config 相对 A1r8 kernel 仅此一项变化，DTB/initramfs 不变，等待实机确认
+power on 的 CMAC context 警告消失。通过后进入完整 BlueZ 最小用户态。
+A1r9 随后实机通过：power on 返回 0，LE 10 秒收到 19 个 report，current settings 保持
+powered+BR/EDR+LE，过滤日志中不再出现 CMAC crypto context 错误。Bluetooth management 与
+进入 BlueZ 前的内核 crypto 前置条件均已完成；当前进入最小 BlueZ、D-Bus 与配对 agent 打包。
+
+为避免每次从 MaskROM 下载，已开始准备 eMMC 常驻链，但尚未写设备。当前候选不是把 RAM 调试
+SPL 原样刷入：它使用已在 R1 验证、SHA-256 固定的 DDR v1.06 blob 作为 external TPL，后接启用
+MMC、关闭 YMODEM 和所有 MMC 写能力的主线 SPL，再从 raw LBA `0x6000` 加载开源 OP-TEE +
+U-Boot proper FIT。ID block/FIT、Rockchip RAM 测试 loader 及 manifest 已在主机生成并解包逐字节
+核对；A5 raw 写区间分别为 `0x40..0xa7` 和 `0x6000..0x664e`，均早于 raw `misc@0xa000`。A1 零写入实机
+测试发现 alias/eMMC 节点被 SPL DT 裁掉，故只尝试两个 RAM loader；A2 改用 `&emmc` 路径并以
+`bootph-all` 保留 `/mmc@30020000` 及 CRU 依赖，实机已经进入 `Trying to boot from MMC1`。
+A2 随后的 `-38` 是 raw 失败后回退到未实现 FS loader 的最终错误。A3 首读探针实机得到
+`sector=4000 count=1 got=1 hdr=4c4f414445522020`（`LOADER  `），直接证明 mainline MMC 视图
+相对旧 parameter 逻辑视图需要 `+0x2000` sectors；原候选加载地址不可用。A4 已将 SPL FIT
+读取地址改为 mainline LBA `0x6000`，随后 usbplug `rl 0x4000` 同样读到 `LOADER`，证明 `wl/rl`
+使用 raw 地址，因此 A5 将 FIT 写入与读取目标统一为 `0x6000`，并完成构建、
+pack/unpack 与 payload 逐字节核验。下一步仍只用 RAM loader，要求看到 `sector=6000 count=1 got=1`
+和原厂 `TOS     ` header；A4 实机现已完全满足该标准，证明块读与双 LBA 合同正确。下一步运行
+只读安装预检。首轮已证明真 MaskROM → RAM usbplug、A223/eMMC 查询与 IDB 双读可工作，但也
+发现历史整盘备份来自厂商 Rockusb 的参数逻辑视图，不能把其中 `0x40` 的全零内容当作 raw IDB。
+修正版会把当前 raw IDB 双读一致结果单独保存为原厂恢复片，再核对 trust 目标区与已有备份。
+该预检现已完全通过：raw IDB 与 trust/FIT 目标均连续双读一致且恢复哈希固定。A5 事务式安装脚本
+和独立原厂恢复脚本已生成并完成 dry-run/语法审计；二者锁定 LocationID、A223、容量、输入 SHA、
+raw `0x40`/`0x6000` 两个范围并强制写后读回，不自动复位；安装异常的现场回滚也会再次读取
+两个原始切片并逐字节比较，无法确认回滚时会明确要求禁止断电。用户明确授权后，A5 已于
+2026-08-12 写入 raw `0x6000..0x664e` 和 `0x40..0xa7`；两处均完成立即读回比较，
+输出 `A5 INSTALL WRITEBACK VERIFIED`，未触发回滚、未复位。当前下一步是在 UART 原始
+日志已开启的前提下做首次冷启动。该冷启动现已通过：BootROM 执行 DDR v1.06
+和主线 SPL，SPL 从 MMC1 raw `0x6000` 读到 FIT magic `d00dfeed`，开源 OP-TEE
+完成 `Initialized` 并转交 normal world，U-Boot proper 枚举 480 MiB 可用 DRAM 与
+eMMC 后进入 `=>`。常驻固件链因而已摆脱 MaskROM/USB/YMODEM；下一步仍不写
+eMMC，从该 U-Boot 把已验证 Linux FIT 装入 RAM，回归四核、无线与 >30 s 稳定性。
+USB 首次未枚举导致 `dfu-util` 未找到设备，重新插拔数据线后 A1r9 FIT 已成功下载，
+三个子镜像 SHA-256 全部通过并进入 rescue shell。同时确认地址必须写为
+`0x6a800000`；无 `0x` 的含字母地址会被 `bootm` 误当子命令。四核、>30 s、Wi-Fi
+与 Bluetooth 本次尚未重新输出证据，仍保留为下一项回归。
 
 为缩短重复进入 U-Boot 的时间，已确认不能简单把 SPL 与 ITB 再次拼接：当前 USB472 本来就是
 39 KiB SPL 紧跟约 797 KiB FIT，而实机地址探针已经证明 MaskROM `0x472` 有效交付窗口只覆盖

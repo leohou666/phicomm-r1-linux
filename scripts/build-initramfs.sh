@@ -10,6 +10,7 @@ regdb_source=${R1_REGULATORY_DB:-/usr/lib/firmware/regulatory.db}
 regdb_signature_source=${R1_REGULATORY_DB_SIGNATURE:-/usr/lib/firmware/regulatory.db.p7s}
 brcm43455_clm_source=${R1_BRCM43455_CLM_BLOB:-/usr/lib/firmware/brcm/brcmfmac43455-sdio.clm_blob.xz}
 wifi_scan_tool=${R1_WIFI_SCAN_TOOL:-}
+bluetooth_mgmt_tool=${R1_BLUETOOTH_MGMT_TOOL:-}
 artifact_tag=${INITRAMFS_ARTIFACT_TAG:-}
 artifacts="$project_root/build/artifacts"
 rootfs=$(mktemp -d "$project_root/build/initramfs.XXXXXX")
@@ -117,6 +118,23 @@ if [ -n "$wifi_scan_tool" ]; then
 		exit 1
 	fi
 	install -m 0755 "$wifi_scan_tool" "$rootfs/bin/r1-wifi-scan"
+fi
+
+if [ -n "$bluetooth_mgmt_tool" ]; then
+	[ -x "$bluetooth_mgmt_tool" ] || {
+		printf 'Bluetooth management tool is missing or not executable: %s\n' \
+			"$bluetooth_mgmt_tool" >&2
+		exit 1
+	}
+	if ! file "$bluetooth_mgmt_tool" | grep -q \
+		'ELF 32-bit.*ARM.*statically linked'; then
+		printf 'Bluetooth management tool must be a static 32-bit ARM ELF: %s\n' \
+			"$bluetooth_mgmt_tool" >&2
+		exit 1
+	fi
+	install -m 0755 "$bluetooth_mgmt_tool" "$rootfs/bin/r1-btmgmt"
+	install -m 0755 "$project_root/initramfs/r1-bt-coexist-test" \
+		"$rootfs/bin/r1-bt-coexist-test"
 fi
 
 for applet in \

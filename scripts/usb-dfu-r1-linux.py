@@ -20,9 +20,9 @@ from desktop_notify import notify
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FIT = (
-    ROOT / "build/artifacts/r1-linux-multiv7-v9-wifi-bt-serdev-a1r7.itb"
+    ROOT / "build/artifacts/r1-linux-multiv7-v9-wifi-bt-mgmt-a1r9.itb"
 )
-DEFAULT_FIT_SHA256 = "80f914a9c2100abe19b43774781d2295ffb4e7da05607f488032a4aee7a26552"
+DEFAULT_FIT_SHA256 = "567a6775dc1bdbbc82180eda5b229588d4892dceb8d60081564cc14435391882"
 
 
 def sha256(path: Path) -> str:

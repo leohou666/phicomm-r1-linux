@@ -1,0 +1,49 @@
+/dts-v1/;
+
+/ {
+	description = "Phicomm R1 Linux 5.10 Wi-Fi + Bluetooth management A1r8";
+	#address-cells = <1>;
+
+	images {
+		kernel-1 {
+			description = "Linux 5.10.262 R1 multi_v7 Wi-Fi Bluetooth serdev";
+			data = /incbin/("../build/artifacts/zImage-wifi-bt-serdev-a1r6");
+			type = "kernel";
+			arch = "arm";
+			os = "linux";
+			compression = "none";
+			load = <0x62000000>;
+			entry = <0x62000000>;
+			hash-1 { algo = "sha256"; };
+		};
+
+		ramdisk-1 {
+			description = "R1 rescue initramfs with Wi-Fi and Bluetooth scan tools";
+			data = /incbin/("../build/artifacts/r1-initramfs-wifi-bt-mgmt-a1r8.cpio.gz");
+			type = "ramdisk";
+			arch = "arm";
+			os = "linux";
+			compression = "gzip";
+			hash-1 { algo = "sha256"; };
+		};
+
+		fdt-1 {
+			description = "Phicomm R1 eMMC Wi-Fi Bluetooth serdev DTB";
+			data = /incbin/("../build/artifacts/rk3229-phicomm-r1-wifi-bt-serdev-a1r6.dtb");
+			type = "flat_dt";
+			arch = "arm";
+			compression = "none";
+			hash-1 { algo = "sha256"; };
+		};
+	};
+
+	configurations {
+		default = "config-1";
+		config-1 {
+			description = "R1 Bluetooth management A1r8";
+			kernel = "kernel-1";
+			ramdisk = "ramdisk-1";
+			fdt = "fdt-1";
+		};
+	};
+};

@@ -1,0 +1,29 @@
+#!/bin/sh
+set -eu
+
+cycles=${1:-30}
+case "$cycles" in
+	''|*[!0-9]*)
+		echo "usage: r1-bt-coexist-test [cycles]" >&2
+		exit 2
+		;;
+esac
+
+echo "R1 coexistence test: $cycles cycles; press Ctrl-C to stop"
+/bin/r1-btmgmt info
+
+i=1
+while [ "$i" -le "$cycles" ]; do
+	echo "=== cycle $i/$cycles: Wi-Fi active scan ==="
+	/bin/r1-wifi-scan
+	echo "=== cycle $i/$cycles: Bluetooth LE scan ==="
+	/bin/r1-btmgmt le-scan 10
+	echo "=== cycle $i/$cycles: Bluetooth BR/EDR inquiry ==="
+	/bin/r1-btmgmt bredr-scan 10
+	echo "=== cycle $i/$cycles: uptime and SMP IPI ==="
+	cat /proc/uptime
+	grep -E 'CPU0|IPI' /proc/interrupts
+	i=$((i + 1))
+done
+
+echo "R1 coexistence test complete"

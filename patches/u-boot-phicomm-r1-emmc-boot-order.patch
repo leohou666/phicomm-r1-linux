@@ -1,0 +1,20 @@
+diff --git a/dts/upstream/src/arm/rockchip/rk3229-phicomm-r1.dts b/dts/upstream/src/arm/rockchip/rk3229-phicomm-r1.dts
+index 1d219d073e0..df7a751ce8f 100644
+--- a/dts/upstream/src/arm/rockchip/rk3229-phicomm-r1.dts
++++ b/dts/upstream/src/arm/rockchip/rk3229-phicomm-r1.dts
+@@ -15,6 +15,7 @@ / {
+ 
+ 	chosen {
+ 		stdout-path = "serial2:1500000n8";
++		u-boot,spl-boot-order = &emmc;
+ 	};
+ 
+ 	memory@60000000 {
+@@ -24,6 +25,7 @@ memory@60000000 {
+ };
+ 
+ &emmc {
++	bootph-all;
+ 	bus-width = <8>;
+ 	cap-mmc-highspeed;
+ 	mmc-hs200-1_8v;

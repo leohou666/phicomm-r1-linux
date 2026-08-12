@@ -652,6 +652,46 @@ cat rk322x_miniloader_v2.46.bin >> idbloader.img
 
 `mkimage -T rksd` 会给镜像加上 Rockchip 的 IDBlock header（magic + 校验和），这是 BootROM 识别 idbloader 的前提。
 
+R1 当前的 eMMC 候选没有使用未经实机验证的 EVB DDR 参数，而是采用已在本机验证的
+`rk322x_ddr_300MHz_v1.06.bin` 作为 external TPL，再拼接启用 MMC 的主线 SPL。这里的
+“external TPL”仍是闭源 DDR training blob；开源边界从 SPL 开始，后级为开源 OP-TEE 与主线
+U-Boot。RAM 调试版的 `CONFIG_SPL_YMODEM_SUPPORT=y`、`# CONFIG_SPL_MMC is not set` 与这个
+常驻候选不是同一个配置，不能混刷。
+
+当前明确写入布局为：
+
+```text
+0x0040..0x00a7  idbloader (DDR v1.06 + mainline MMC SPL)
+0x6000..0x664e  FIT (open OP-TEE + U-Boot proper + U-Boot DTB)
+0xa000..        原 misc 及后续分区（parameter 逻辑地址 0x8000 + FwPartOffset），候选不触及
+```
+
+这只是主机审计结果。A2 实机已经进入 MMC1，但其 `CONFIG_SYS_MMCSD_FS_BOOT=y` 会在 raw
+读取/解析失败后继续走未实现的 FS loader，所以终端显示的 `-38` 是最终 fallback 错误，不足以
+判定第一次块读。A3 仅在 RAM 诊断 SPL 中打印首读信息，实机在 mainline MMC LBA `0x4000`
+读到 `LOADER  `，再次验证该视图相对 Rockchip 备份/刷写地址有 `+0x2000` sectors 差异。因此
+A4 实机已得到 `sector=6000 count=1 got=1` 和 `TOS     `，该映射与块读链路通过。后续 RAM
+usbplug 的 `rl 0x4000` 也读到 `LOADER`，证明 `rkdeveloptool rl/wl` 在该 usbplug 下使用 raw
+地址，不能直接使用 parameter 中的逻辑 `trust@0x4000`。A5 因而统一从 raw `0x6000` 写入和读取 FIT。
+真正部署前仍须以只读预检双读比较原始 IDB/trust 恢复切片，验证真 MaskROM 恢复和写后读回，
+并获得对两个精确写入区间的明确授权。
+
+这里还必须区分“厂商 Rockusb 参数逻辑视图”和“RAM usbplug/raw eMMC 视图”。R1 早期整盘备份
+的 LBA 0 开头为 `PARM`，并在前 4 MiB 每 1 MiB 重复 parameter；其 LBA `0x40` 为全零，不能
+作为 BootROM ID block 恢复源。相反，U-Boot 官方 Rockchip 文档明确要求 MMC `idbloader.img`
+从 sector 64 写入；Rockchip 维护的 `rkdeveloptool` 源码中 `upgrade_loader()` 同样直接调用
+`RKU_WriteLBA(64, ...)`。R1 usbplug 对 `rl 0x40` 的两次读取相同但与旧逻辑备份不同，正符合
+两个会话暴露不同地址视图的解释。当前修正策略是独立保存 usbplug 双读得到的 raw IDB 原件，
+而不是用旧 `parameter-idb.img + 0x40` 的零区覆盖它。
+
+来源：U-Boot 项目维护的 [Rockchip flashing 文档](https://docs.u-boot.org/en/stable/board/rockchip/rockchip.html)
+（访问于 2026-08-11）给出 `dd ... seek=64`；Rockchip Linux 维护的
+[`rkdeveloptool` commit `304f0737` 的 `main.cpp`](https://github.com/rockchip-linux/rkdeveloptool/blob/304f073752fd25c854e1bcf05d8e7f925b1f4e14/main.cpp)
+（该 commit 由 shineseth-rk 于 2025-03-07 合入）在 loader upgrade 路径写 LBA 64；其
+[`RKComm.cpp`](https://github.com/rockchip-linux/rkdeveloptool/blob/304f073752fd25c854e1bcf05d8e7f925b1f4e14/RKComm.cpp)
+把 `rl/wl` 参数原样编码进 `READ_LBA/WRITE_LBA` CBW，主机工具本身不施加 `0x2000` 偏移。
+“不同设备端 loader 暴露不同视图”是基于这些源码与 R1 实机内容的项目推断，不是手册原文。
+
 ### 8.6 u-boot.itb（FIT 镜像）
 
 开源路径中，FIT 镜像取代了分开的 uboot.img + trust.img。它是一个声明式打包格式：
@@ -1041,9 +1081,12 @@ dfu 0 ram 0
 命令。于是可以把目标端写成单行事务：
 
 ```text
-setenv dfu_alt_info 'linux-fit ram 6a800000 01000000' && dfu 0 ram 0 && iminfo 6a800000 && bootm 6a800000
+setenv dfu_alt_info 'linux-fit ram 6a800000 01000000' && dfu 0 ram 0 && iminfo 0x6a800000 && bootm 0x6a800000#config-1
 ```
 
-`iminfo`/`bootm` 会验证 FIT 及其 SHA-256 子镜像；`&&` 保证任一步失败都不继续跳转。这个设计
+`iminfo`/`bootm` 会验证 FIT 及其 SHA-256 子镜像；`&&` 保证任一步失败都不继续跳转。
+R1 这版 U-Boot 必须保留地址的 `0x` 前缀：无前缀的 `6a800000` 含字母，命令分派会
+把它误当成 `bootm` 子命令并只打印 usage。显式的 `#config-1` 也把本次验证过的 FIT
+configuration 固定下来。这个设计
 只能加速已经进入 U-Boot proper 之后的 Linux 载荷，不能替代到达 OP-TEE/U-Boot 所需的前级
-SPL YMODEM FIT。当前 R1 USB DFU 仍是待实机候选，而非已验证能力。
+SPL FIT。R1 USB DFU RAM 现已实机验证能下载、校验并启动 A1r9 Linux FIT。

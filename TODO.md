@@ -94,7 +94,7 @@
 - [x] 修复救援 initramfs 缺少 `echo/printf/test/[` applet 链接，并将 kernel/initramfs/B2 DTB 合成单文件 Linux FIT
 - [x] 确认普通 SPL+FIT 拼接已经被 RK322x 0x472 有效窗口实机否定；构建保留 INTID55 cleanup 的直接 UART2 RX 无节流候选
 - [ ] 实机用 direct-RX loader + `--tx-gap-us 0` 验证 FIT 传输速度和可靠性，再决定是否替换默认 loader
-- [x] 构建并离线审计 U-Boot proper USB DFU RAM-only 候选；明确关闭 DFU/MMC、Fastboot、RockUSB 与 mass-storage 写入路径
+- [x] 构建并离线审计 U-Boot proper USB DFU RAM-only 候选；明确关闭 DFU/MMC、Fastboot、RockUSB 与 mass-storage 写入路径，实机已下载/校验 A1r9 FIT 并进入 shell
 - [x] 通过单文件 RAM 启动路径运行 B2；用户确认 USB 下载已足够快，Linux 日志确认修正 initramfs 与 eMMC 生效（传输计时未留档）
 - [x] 实机运行 C1：复用 multi_v7 clean v9 zImage且保持 B2 DT/initramfs；CPU0–CPU3 与 eMMC 同时通过（本轮文本只保存 uptime 13.56 秒，未保存 IPI）
 - [x] 实机运行 C2：失败 v11 配置只补 Cortex-A7 `ARM_ERRATA_814220`；三个次核仍超时，实机否定该单变量，eMMC 继续正常
@@ -104,6 +104,16 @@
 - [x] 定位并修复当前 RAM-only 主线 SMP 启动冻结：MaskROM/RockUSB 遗留 USB OTG INTID 55/APR0 阻塞 CPU0 IRQ
 - [x] 验证现代 U-Boot 的 eMMC 只读访问及 Rockchip `FwPartOffset=0x2000` 地址差异
 - [x] 从纯 RAM 现代 U-Boot 启动单核主线 Linux 并进入救援 shell
+- [x] eMMC 常驻 A1 零写入诊断：DDR/SPL 正常，但 SPL DT 裁掉 alias/eMMC 节点，启动列表只有两个 RAM loader；未访问 eMMC
+- [x] 主机构建并逐字节审计 eMMC 常驻 A2：用 `&emmc` 路径并以 `bootph-all` 保留 eMMC/CRU；当时的 FIT `0x4000` 目标假设随后被 usbplug raw 双读否定
+- [x] A2 零写入实机已进入 `Trying to boot from MMC1`；raw 失败后又回退到未实现的 FS loader，最终 `-38` 覆盖了 raw 返回码，旧日志不能证明实际读到的 header
+- [x] A3 首读探针确认 mainline MMC LBA `0x4000` 返回 `LOADER  `；与既有 `FwPartOffset=0x2000` 实证吻合，否定 SPL 从 `0x4000` 加载 FIT
+- [x] A4 零写入实机确认 mainline MMC LBA `0x6000` 返回原厂 trust 的 `TOS     `；usbplug raw `0x4000` 又返回 `LOADER`，故 A5 最终统一从 raw `0x6000` 写入和读取 FIT
+- [x] 运行修正后的只读预检：真 MaskROM → RAM usbplug、A223/Samsung/容量、raw IDB 独立恢复片、raw `0x6000` trust 双读与备份比较全部通过
+- [x] 生成并静态审计精确安装/恢复脚本：锁定 LocationID、容量、输入 SHA、raw `0x40`/`0x6000`，写后读回；安装异常会尝试现场回滚并读回验证，两个脚本均不自动 reset
+- [x] 获得 raw eMMC `0x40` 与 `0x6000` 两个精确区间的明确授权，写入 A5 并对两个范围立即读回逐字节验证通过；未触发回滚，未自动复位
+- [x] 首次 eMMC 冷启动通过：BootROM → DDR v1.06 → mainline MMC SPL → raw `0x6000` FIT → open OP-TEE → U-Boot proper，无 MaskROM/USB/YMODEM 依赖
+- [ ] 从 eMMC 常驻 U-Boot 以 RAM-only Linux FIT 回归四核、uptime >30 s、eMMC、Wi-Fi 与 Bluetooth，确认常驻 SPL 与 RAM 调试 SPL 行为一致
 - [ ] （降级/仅研究）USB Host / Device：R1 智能音箱没有对外 USB 外设接口；保留已构建候选用于 SoC/DFU 研究，不作为板载外设 bring-up 主线
 - [ ] （后续）恢复 RK322x DDR DVFS：当前 `rk322x_ddr_300MHz_v1.06.bin` 只负责上电训练并以 300 MHz 初始化 DDR；需先确认 Rockchip TEE 的 DDR SMC ABI、RK322x DMC/devfreq 驱动以及板级 DDR timing/频点表，再做 RAM-only A/B，不能把更换 TEE 当作已经启用动态调频
 - [ ] 连续冷启动测试
@@ -136,6 +146,8 @@
 - [x] Bluetooth UART A1r7：原厂 HCD 以 `BCM4345C0.hcd` 命中并完成 Patch，firmware build `0000` → `0124`
 - [x] 提取正确的 `.hcd`
 - [x] 创建 `hci0`
+- [x] Bluetooth management A1r8：controller info、power on、BR/EDR inquiry、LE scan 及 Wi-Fi 5 GHz/四核共存已实机通过
+- [x] Bluetooth management A1r9：`CONFIG_CRYPTO_AES=y` 实机消除 CMAC context 错误，power/LE scan/settings 均通过
 - [ ] BlueZ 配对
 - [ ] PipeWire A2DP Sink
 - [ ] SBC 播放

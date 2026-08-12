@@ -1,0 +1,44 @@
+diff --git a/common/spl/spl_mmc.c b/common/spl/spl_mmc.c
+index d9f5a355d8e..ab80889f442 100644
+--- a/common/spl/spl_mmc.c
++++ b/common/spl/spl_mmc.c
+@@ -15,15 +15,28 @@
+ #include <mmc.h>
+ #include <image.h>
+ #include <imx_container.h>
+ 
++static bool r1_mmc_first_read_logged;
++
+ static ulong h_spl_load_read(struct spl_load_info *load, ulong off,
+ 			     ulong size, void *buf)
+ {
+ 	struct blk_desc *bd = load->priv;
+ 	lbaint_t sector = off >> bd->log2blksz;
+ 	lbaint_t count = size >> bd->log2blksz;
++	ulong blocks;
++
++	blocks = blk_dread(bd, sector, count, buf);
++	if (!r1_mmc_first_read_logged) {
++		const u8 *header = buf;
++
++		r1_mmc_first_read_logged = true;
++		printf("R1MMC sector=%lx count=%lx got=%lx hdr=%02x%02x%02x%02x%02x%02x%02x%02x\n",
++		       sector, count, blocks, header[0], header[1], header[2],
++		       header[3], header[4], header[5], header[6], header[7]);
++	}
+ 
+-	return blk_dread(bd, sector, count, buf) << bd->log2blksz;
++	return blocks << bd->log2blksz;
+ }
+ 
+ static __maybe_unused unsigned long spl_mmc_raw_uboot_offset(int part)
+@@ -48,8 +61,7 @@ int mmc_load_image_raw_sector(struct spl_image_info *spl_image,
+ 	spl_load_init(&load, h_spl_load_read, bd, bd->blksz);
+ 	ret = spl_load(spl_image, bootdev, &load, 0, sector << bd->log2blksz);
+ 	if (ret) {
+-		puts("mmc_load_image_raw_sector: mmc block read error\n");
+-		log_debug("(error=%d)\n", ret);
++		printf("R1MMC raw load rejected: %d\n", ret);
+ 		return ret;
+ 	}
+ 

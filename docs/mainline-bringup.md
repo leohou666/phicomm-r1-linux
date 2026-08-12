@@ -845,6 +845,34 @@ A1r7 实机已命中 `brcm/BCM4345C0.hcd`，firmware 从 `build 0000` 更新至 
 存在，UART1 patchram 统计为 `tx:54092 rx:3205`。由此 AW-CM256SM/CYW43455 的主线内核
 Bluetooth bring-up 完成，下一步进入 management 用户空间、扫描与 BlueZ。
 
+### Bluetooth management A1r8
+
+A1r8 保持 A1r7 的 kernel、DTB、Wi-Fi 数据和 Bluetooth HCD 不变，只在 initramfs 加入
+`tools/r1-btmgmt.c`。该 ARM EABI freestanding 静态程序直接使用内核 Bluetooth Management
+control channel，不依赖 libc、D-Bus、`bluetoothd` 或完整 BlueZ；支持 `info`、power on/off、
+BR/EDR inquiry 和 LE scan。扫描输出刻意隐藏设备地址，只显示地址类型、RSSI 和可打印名称。
+`initramfs/r1-bt-coexist-test` 会依次运行 Wi-Fi active scan、LE scan、BR/EDR inquiry，并在每轮
+保存 uptime 与四核 IPI，用于进入完整 BlueZ 前的共存压力检查。
+
+主机端已确认该工具为静态 ARM EABI5 ELF、无未解析符号且 `GNU_STACK` 为 `RW`；initramfs 内
+两个扫描器、HCD alias 和 FIT 的 kernel/ramdisk/DTB 均完成逐字节审计。当前产物为
+`build/artifacts/r1-linux-multiv7-v9-wifi-bt-mgmt-a1r8.itb`，SHA-256
+`beed6cfee4cc99200a3fcf4a1b2853a9f0d79c00f48824260e7d8935477de2fb`。A1r8 已实机验证 controller
+info、power on 与 BR/EDR inquiry 命令；现场没有可发现的经典设备，故结果为零条。首轮 LE scan
+因 LE supported 但 current settings 未启用而被 management 拒绝；修正版会先 `SET_LE=on`。
+修正版随后实机执行 LE scan 20 秒，共收到 29 个 advertising report，退出码为 0；再次读取
+current settings 为 `0x281`，即 powered、BR/EDR、LE 均已启用。地址按工具设计未输出；type
+1/2 分别代表 public/random address，计数是广播 report 数而非去重设备数。由于实机天线损坏，
+本轮只证明 discovery 链路，不评价 RSSI 或覆盖。CMAC config 与长时共存仍待验证。
+用户随后确认共存脚本通过，Wi-Fi 在交替扫描中仍能发现 5 GHz 网络，未报告四核、uptime、SDIO
+或 HCI 回退；A1r8 management 阶段据此完成。最终 config 审计发现 `CRYPTO_CMAC=y` 已存在，实际
+缺口是 `CRYPTO_AES=m` 且 initramfs 不加载模块。A1r9 只把 AES 改为 built-in，config diff 仅一行，
+DTB 和 initramfs 逐字节不变。新 FIT SHA-256 为
+`567a6775dc1bdbbc82180eda5b229588d4892dceb8d60081564cc14435391882`，等待实机确认 CMAC 警告消失。
+A1r9 实机 power on 返回 0，LE 10 秒扫描收到 19 个 report 且退出码 0，current settings 保持
+`0x281`；过滤 dmesg 中不再出现 CMAC crypto context 错误。AES built-in 单变量修复通过，下一步
+保持 kernel/DT/firmware 不变，加入最小 BlueZ、system D-Bus 和配对 agent。
+
 DDR 471 启动输出的 300 MHz 是初始化/训练频率，不是运行期 DVFS 证据。当前 clean 5.10 没有
 RK322x DMC/devfreq 驱动；恢复 DDR DVFS 还依赖 Rockchip TEE DDR SMC ABI 与板级 timing/OPP，
 已延后到固定外设稳定之后。

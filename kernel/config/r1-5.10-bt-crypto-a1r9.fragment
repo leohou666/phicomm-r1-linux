@@ -1,0 +1,2 @@
+# Bluetooth SMP/LE Secure Connections needs cmac(aes) before modules exist.
+CONFIG_CRYPTO_AES=y

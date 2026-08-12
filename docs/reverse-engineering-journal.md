@@ -4486,3 +4486,446 @@ A1r7 实机通过。`hci_bcm` 首先识别 `BCM4345C0 (003.001.025) build 0000`�
 因此 R1 的 AW-CM256SM Bluetooth UART、主线 serdev/hci_bcm、LPO/控制 GPIO、硬件流控、原厂
 HCD 与 `hci0` 阶段均已由实机验证。下一阶段转入最小 Bluetooth management 用户空间和扫描；
 尚未声称 BlueZ 配对或 A2DP 可用。
+
+### Bluetooth management A1r8 主机端候选（2026-08-11）
+
+在 A1r7 kernel/DT/HCD 不变的前提下，新增 `tools/r1-btmgmt.c`。它是 freestanding ARM EABI
+程序，直接打开 `HCI_CHANNEL_CONTROL` 并使用 Linux Bluetooth Management 协议，提供 controller
+info、power on/off、BR/EDR inquiry 与 LE public/random discovery；不引入 D-Bus、`bluetoothd`
+或完整 BlueZ。扫描输出不记录 controller/peer 地址，只打印类型、RSSI 与可打印名称。
+
+可复现构建与封装命令：
+
+```sh
+scripts/build-r1-btmgmt.sh
+R1_WIFI_FIRMWARE=1 R1_WIFI_REGULATORY=1 R1_BLUETOOTH_FIRMWARE=1 \
+R1_WIFI_SCAN_TOOL=build/artifacts/r1-nl80211-scan \
+R1_BLUETOOTH_MGMT_TOOL=build/artifacts/r1-btmgmt \
+INITRAMFS_ARTIFACT_TAG=wifi-bt-mgmt-a1r8 scripts/build-initramfs.sh
+mkimage -f scripts/r1-linux-multiv7-v9-wifi-bt-mgmt-a1r8.its \
+  build/artifacts/r1-linux-multiv7-v9-wifi-bt-mgmt-a1r8.itb
+```
+
+```text
+10fb72fd582d4647ff1613e0586d9615382e046c86ad0ff0bae262a24f52ce44  build/artifacts/r1-btmgmt
+2e0abf4f9a188c1b86e201386cc7c6913d581a8ff52311b910f4c67ffbbf4888  build/artifacts/r1-initramfs-wifi-bt-mgmt-a1r8.cpio.gz
+beed6cfee4cc99200a3fcf4a1b2853a9f0d79c00f48824260e7d8935477de2fb  build/artifacts/r1-linux-multiv7-v9-wifi-bt-mgmt-a1r8.itb
+```
+
+静态审计确认 ELF 无动态依赖/未解析符号，`GNU_STACK` 为 `RW`；initramfs 内 `r1-btmgmt`、
+`r1-wifi-scan`、HCD alias 以及 FIT 三个 payload 均核对通过。另加入可 Ctrl-C 中止的
+`r1-bt-coexist-test [cycles]`，每轮依次做 Wi-Fi、LE、BR/EDR 扫描并输出 uptime/IPI。以上仍为
+主机端候选，A1r8 尚未实机，不能标记 management、扫描或共存测试完成。
+
+A1r8 首次上板后，`info`、`power on` 等所有带参数调用都只打印 usage。该结果发生在建立 management
+socket 之前，因此不是 Bluetooth/controller 故障。反汇编确认首版 C `_start()` 在读取初始
+`argc/argv` 前允许编译器生成函数序言，导致读取的已经不是进程入口栈。现已将 `_start` 改为
+`naked` 汇编入口：先从原始 SP 取 argc/argv，再调用 C `main`；反汇编明确显示 `_start` 的第一条
+指令即保存 SP，随后才 `bl main`。修正版重新封装后的三项 SHA-256 如上，等待再次上板验证。
+
+入口修正版上板后 `info` 成功读取 BCM4345C0 build 0124、manufacturer 15 及 BR/EDR/LE/SSP/
+Secure Connections/advertising/privacy/PHY 等 supported settings；rfkill 为 state 1、hard 0、soft 0。
+但 `power on` 静默返回 1，current settings 仍只有 BR/EDR。源码复核发现 ARM EABI 的直接
+`send`/`recv` syscall 都有第四个 `flags` 参数，首版封装只装载 r0-r2，导致 r3 残留；无 payload
+的 `READ_INFO` 偶然成功，而带 1-byte payload 的 `SET_POWERED` 在 send 阶段失败。现已改为
+四参数 syscall 并显式设置 flags=0，同时让 power send failure 打印 errno；上面校验和已再次
+更新，等待第三次上板。该失败与 controller、HCD 或 rfkill 无关。
+
+四参数 syscall 修正版实机成功执行 `SET_POWERED`，返回 `powered=on`、退出码 0，current settings
+由 `0x80` 变为 `0x81`。controller 为 manufacturer 15 的 BCM4345C0 build 0124，management
+version 7；supported settings 明确包含 BR/EDR、LE、SSP、Secure Connections、advertising、
+privacy 与 PHY configuration。power 过程中内核提示无法创建 CMAC crypto context，说明当前
+内核未内建所需 CMAC crypto，暂不阻塞 discovery，但进入完整 BlueZ 前必须补齐。
+
+BR/EDR inquiry 已正常开始并结束，现场 `scan_entries=0` 只说明测试时没有经典设备处于可发现状态。
+随后 LE scan 返回 management `REJECTED (0x0b)`。5.10 源码的 `mgmt_le_support()` 表明 controller
+虽支持 LE，但未置 `HCI_LE_ENABLED` 时必然拒绝；当时 current settings 也确实只有 powered 与
+BR/EDR。工具现已在 LE discovery 前自动执行 `MGMT_OP_SET_LE=on`，上述校验和对应这一修正版，
+等待再次上板验证 LE scan。
+
+LE 自动 enable 修正版实机通过：`SET_POWERED` 和 `SET_LE` 均成功，20 秒 discovery 收到 29 个
+advertising report 并以退出码 0 结束；随后 `READ_INFO` 的 current settings 为 `0x281`，明确
+包含 powered、BR/EDR 与 LE。输出中的 address type 1/2 是 public/random，工具继续隐藏实际地址；
+29 是重复广播在内的 report 数，不等同于 29 个唯一设备。板载天线当前已损坏，因此本结果只能
+验证 management→HCI→BCM4345C0 firmware→LE radio discovery 链路，不能用 RSSI 推断正常覆盖。
+CMAC crypto context 警告和 Wi-Fi/四核长时共存仍是下一步。
+
+用户随后确认 `r1-bt-coexist-test` 通过，交替扫描期间 Wi-Fi 仍发现 5 GHz 网络，未报告四核、
+uptime、SDIO、HCI 或 firmware 回退。A1r8 的最小 management 与共存阶段因此完成。
+
+CMAC 警告的 config 审计显示 `CONFIG_CRYPTO_CMAC=y` 已正确内建，但它依赖的通用 AES 实现仍为
+`CONFIG_CRYPTO_AES=m`；当前 initramfs 不加载 kernel modules，所以运行时无法解析 `cmac(aes)`。
+A1r9 新增单变量 fragment 把 AES 改为 built-in。最终 config 与 A1r8 kernel config 的 diff 只有
+这一行，DTB 与 A1r8 逐字节相同，initramfs 也保持不变：
+
+```text
+e7e932e2b41dd6a504376231634010f7d60d77d2376f501fc5b9d57f94c4a850  build/artifacts/zImage-wifi-bt-mgmt-a1r9
+d0216bbddb2da4735141ce6090a842782449c40f71d6506061cd41f773aae8bc  build/artifacts/rk3229-phicomm-r1-wifi-bt-mgmt-a1r9.dtb
+567a6775dc1bdbbc82180eda5b229588d4892dceb8d60081564cc14435391882  build/artifacts/r1-linux-multiv7-v9-wifi-bt-mgmt-a1r9.itb
+```
+
+A1r9 仍是主机端候选；成功标准是 `power on` 返回 0、current settings 保持 powered/BR-EDR/LE，
+且 dmesg 不再出现 `Unable to create CMAC crypto context`。
+
+A1r9 实机通过：`power on` 返回 0，10 秒 LE scan 收到 19 个 report 并以 0 退出，current settings
+仍为 `0x281`；过滤 dmesg 只有正常 Bluetooth/HCD patchram 日志，不再出现 CMAC crypto context
+错误。由此确认缺口确为未加载的 AES module，built-in 单变量修复有效。Bluetooth management、
+两类 discovery、Wi-Fi/四核共存和进入配对前的 CMAC/AES 前置条件均完成；下一阶段固定 A1r9
+kernel/DT/firmware，开始打包最小 BlueZ、system D-Bus 与配对 agent。
+
+### eMMC 常驻启动 A1 主机构建与零写入测试准备（2026-08-11）
+
+用户希望停止每次进入 MaskROM 后重复下载启动链。本轮先审计当前 RAM 调试版，确认其最终
+`.config` 为 `# CONFIG_SPL_MMC is not set`、`CONFIG_SPL_YMODEM_SUPPORT=y`；它依赖先下载的
+DDR 471 并从 UART 接收 FIT，不能原样写入 eMMC 自举。重新执行干净的
+`phicomm-r1_defconfig` 后，标准配置则为 `CONFIG_SPL_MMC=y`、关闭 YMODEM，并固定
+`CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR=0x4000`。
+
+R1 板级 U-Boot DT 没有 EVB 的 `rockchip,sdram-params`，所以没有把未在 R1 冷启动验证的主线
+TPL 当作基线。A1 改用已在本机 RAM 链验证的
+`rk322x_ddr_300MHz_v1.06.bin`（7,196 B，SHA-256 `cab11c3a...`）作为 external TPL，后接
+主线 MMC SPL。新增的 SPL boot-order patch 显式指定 `mmc0`；SPL 仍保留已验证的 secure
+INTID 55/APR0 cleanup，U-Boot proper 仍提供只写 RAM 的 USB DFU，而
+`CONFIG_SPL_MMC_WRITE`、`CONFIG_MMC_WRITE` 和 `CONFIG_DFU_MMC` 均关闭。
+
+可复现构建命令：
+
+```sh
+scripts/build-r1-emmc-boot-candidate.sh
+```
+
+脚本复制当前 U-Boot 工作树到 `/tmp`，不清理或改写原工作树；锁定 DDR/OP-TEE 输入 SHA，应用
+`patches/u-boot-phicomm-r1-emmc-boot-order.patch`，构建 external TPL + SPL + FIT，并用
+`rkdeveloptool pack/unpack` 验证 RAM 诊断 loader。`rkdeveloptool` 即使只执行离线 `pack` 也会先
+调用 `libusb_init()`，受限沙箱会返回 `-99` 且只写入自己的 log；本轮在非沙箱环境完成了同一
+纯离线 pack，未执行 `db`、`wl`、`rd` 或任何设备命令。
+
+FIT 解包后的 U-Boot、OP-TEE 和 DTB 与构建输入逐字节一致；Rockchip loader 解包后的 DDR、
+SPL 和 FlashData 前缀一致，所有对齐尾部为零。固定产物：
+
+```text
+f311b58efacd241ad2e5e7f6915961674e73be563271e5e7177566950b7f1d7e  build/artifacts/r1-emmc-idbloader-open-optee-a1.img
+6ee1da1dc69a9f98253924698e81aa1aff2b50b45a57d85576854912ec7a23ce  build/artifacts/r1-emmc-u-boot-open-optee-a1.itb
+cdb31bdda0c1560c5eaae8fc48d52c2a35e583332b60d5d018ceb0f36af02625  build/artifacts/r1-emmc-spl-open-optee-a1.bin
+b03c72fb67116147fa6976f9c7a00490f0c9e0937a89e9ee68a97f7c9d9f270b  build/artifacts/r1-emmc-mmc-spl-ram-test-a1-loader.bin
+```
+
+原厂 parameter 的绝对分区表再次核对为 `uboot@0x2000` 长 `0x2000` sectors、
+`trust@0x4000` 长 `0x4000` sectors、`misc@0x8000`。A1 ID block 为 53,248 B，占
+`0x40..0xa7`；FIT 为 826,880 B，占 `0x4000..0x464e`。它不会触及 misc/boot/recovery，
+但会替换原 ID block 和 trust 前部，因此仍属于破坏性写入。当前结论仅为“主机构建和字节审计
+通过”，不是“已可安全刷写”或“冷启动已验证”。下一步只执行 RAM-only MMC SPL 诊断：预期
+DDR/SPL 启动后从现有 eMMC `0x4000` 读到原厂 trust，并报告非 FIT/坏 FIT；完成该 A/B、目标
+复核、精确读回与真 MaskROM 恢复演练后，才请求对两个明确 LBA 区间的写入授权。
+
+专用零写入诊断命令如下；不要使用会等待 YMODEM `C` 的 `boot-r1-optee-uboot.py`：
+
+```sh
+sudo python3 scripts/test-r1-emmc-mmc-spl.py
+```
+
+该脚本先独占 `/dev/ttyUSB0`，仅执行 `rkdeveloptool db`，保存原始串口到
+`build/artifacts/r1-emmc-mmc-spl-ram-test-a1.log`，默认采集 12 秒后释放串口。验收组合为
+`Trying to boot from MMC1` 与随后针对原厂 trust 的 non-FIT/bad-FIT 错误；若没有两项同时出现，
+保持 eMMC 不变并先分析日志。
+
+#### A1 零写入实机失败与 A2 修正
+
+A1 RAM-only 实机输出为：
+
+```text
+Trying to boot from RAM
+Error: -19
+Trying to boot from RAM
+Error: -22
+SPL: Unsupported Boot Device!
+```
+
+DDR v1.06 和主线 SPL 已正常运行，但没有出现 MMC1，因此 A1 未访问 eMMC。两个 RAM 行来自
+Rockchip RAM loader 与 common SPL RAM loader 同时注册到 `BOOT_DEVICE_RAM`，不是 MMC 被误打印。
+直接解析 A1 `u-boot-spl.bin` 末尾 DTB，确认 `/chosen` 虽保留字符串 `mmc0`，但 `/aliases` 与
+`/mmc@30020000` 都被 SPL fdtgrep 裁掉；`board_boot_order()` 无法把 `mmc0` 解析为设备节点，
+而 USB boot source 已预先加入 RAM，使最终列表只剩 RAM。
+
+A2 将 boot order 改为 DTS path reference `&emmc`，并在 eMMC 节点增加 `bootph-all`。重新构建、
+pack/unpack 和 FIT payload 比对均通过；解析 A2 SPL DTB 已确认：
+
+```text
+u-boot,spl-boot-order = "/mmc@30020000"
+/mmc@30020000 status = "okay"
+compatible = "rockchip,rk3228-dw-mshc", "rockchip,rk3288-dw-mshc"
+/clock-controller@110e0000 retained
+```
+
+```text
+f6d59fc3499858fe8a36875062875e12907026c831ac311ca57220c503802622  build/artifacts/r1-emmc-idbloader-open-optee-a2.img
+bb2e5ab94c96f0184e01440993309cacb48738cf72f309f2b34dd38b4ae9847b  build/artifacts/r1-emmc-u-boot-open-optee-a2.itb
+61c47339f63716088f81b9a14e4eb00cd0578d14127e599175d247ab5e4fdaa7  build/artifacts/r1-emmc-spl-open-optee-a2.bin
+c0e4cb1977a34e8d18d91a3736063298dc0375c784800d63952e3df8a4e01a1c  build/artifacts/r1-emmc-mmc-spl-ram-test-a2-loader.bin
+```
+
+`scripts/test-r1-emmc-mmc-spl.py` 的默认 loader、日志名和强制 SHA 已切换到 A2。A1 保留为失败
+证据；下一次仍执行同一命令，不写 eMMC：
+
+```sh
+sudo python3 scripts/test-r1-emmc-mmc-spl.py
+```
+
+#### A2 实机进入 MMC1 与 A3 首读探针（2026-08-11）
+
+A2 RAM-only 实机首次出现：
+
+```text
+Trying to boot from MMC1
+mmc_load_image_raw_sector: mmc block read error
+Error: -38
+```
+
+已验证事实是 SPL DT、boot-order 映射和 MMC1 loader 路径均已工作；设备仍未被写入。源码审计
+同时发现旧提示具有误导性：`mmc_load_image_raw_sector()` 对 `spl_load()` 的任何非零返回都打印
+“block read error”，而 A2 又启用了 `CONFIG_SYS_MMCSD_FS_BOOT=y`、没有启用任何 SPL 文件系统。
+因此 raw 路径失败后会 fallback 到 FS 路径并返回 `-ENOSYS`（`-38`），覆盖 raw 的真实返回码。
+仅凭 A2 日志不能区分“块读失败”和“已读到非 FIT header 后解析拒绝”。
+
+完整 User Area 备份的只读复核确认物理 LBA `0x4000` 前 8 bytes 为
+`54 4f 53 20 20 20 20 20`（`TOS     `），与提取的原厂 `trust.img` 一致。A3 因而只在临时构建副本
+的 MMC read callback 增加一次性探针，输出 sector、请求/返回块数和前 8 bytes，并单独打印 raw
+返回码；不增加写能力。构建脚本继续验证 external DDR/SPL loader 的解包前缀、零填充及 FIT 三个
+payload，未调用 `db` 或任何存储命令。固定诊断产物为：
+
+```text
+eab978cf23f688730ccddab7a7c52223b86ba2d4115d8f1bc152838411c26d05  build/artifacts/r1-emmc-idbloader-open-optee-a3.img
+bb2e5ab94c96f0184e01440993309cacb48738cf72f309f2b34dd38b4ae9847b  build/artifacts/r1-emmc-u-boot-open-optee-a3.itb
+5ccf9fcec6807ae583e906cf013e4500841b90e840099139e26c51a2426098c5  build/artifacts/r1-emmc-spl-open-optee-a3.bin
+d4c52eb737d14182fb0a303fbbfe7dfec6292bed16a800edfc1f0a683b2a59a7  build/artifacts/r1-emmc-mmc-spl-ram-test-a3-loader.bin
+```
+
+下一次仍执行同一零写入命令：
+
+```sh
+sudo python3 scripts/test-r1-emmc-mmc-spl.py
+```
+
+通过标准是同时出现 `Trying to boot from MMC1`、
+`R1MMC sector=4000 count=1 got=1 hdr=544f532020202020` 和 raw rejection。只有这三项均满足，
+才可确认 SPL 从绝对 LBA `0x4000` 成功读到了原厂 trust header；仍不代表已经允许写 eMMC。
+
+#### A3 实机确认双 LBA 视图与 A4 修正（2026-08-11）
+
+A3 实机的块读成功，但 header 与原先预期不同：
+
+```text
+Trying to boot from MMC1
+R1MMC sector=4000 count=1 got=1 hdr=4c4f414445522020
+R1MMC raw load rejected: -22
+Error: -38
+```
+
+`got=1` 直接证明块读链路正常；`4c4f414445522020` 为 `LOADER  `，与原厂 `uboot.img` header
+一致，而不是 trust 的 `TOS     `。这与此前主线 U-Boot 读取 recovery 时验证的地址关系完全
+一致：mainline MMC 请求 LBA 比 Rockchip Loader/备份中的对应位置大 `0x2000` sectors。这里不再
+混用“物理 LBA”措辞，而明确区分两个已观察到的地址视图。
+
+因此 A3 否定了 `CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR=0x4000`。A4 改为：
+
+```text
+Rockchip loader/write view: FIT target LBA 0x4000
+mainline SPL MMC view:      FIT read LBA   0x6000
+```
+
+构建脚本和 manifest 已拆分记录 `fit_write_lba` 与 `spl_fit_read_lba`，避免后续再次混淆。A4
+仍只有读能力，host build、loader pack/unpack、零填充及 FIT payload 比对全部通过：
+
+```text
+81fea15cbc4b73cae51908b7e290c955eab074cb8b8db5260acb64f17c7811c5  build/artifacts/r1-emmc-idbloader-open-optee-a4.img
+bb2e5ab94c96f0184e01440993309cacb48738cf72f309f2b34dd38b4ae9847b  build/artifacts/r1-emmc-u-boot-open-optee-a4.itb
+1cf0d15303eb6438bec99cbeb0cd32d5b73978fb577c918a37a409f611241bae  build/artifacts/r1-emmc-spl-open-optee-a4.bin
+429bb70e19c39d2d92de75c92895c0b417dacfb31438052a79b43b22cbc3d65d  build/artifacts/r1-emmc-mmc-spl-ram-test-a4-loader.bin
+```
+
+下一步继续运行同一 `sudo python3 scripts/test-r1-emmc-mmc-spl.py`。通过标志变为
+`R1MMC sector=6000 count=1 got=1 hdr=544f532020202020`；仍不写 eMMC。
+
+#### A4 实机通过与写入前只读预检（2026-08-11）
+
+A4 RAM-only 实机得到：
+
+```text
+Trying to boot from MMC1
+R1MMC sector=6000 count=1 got=1 hdr=544f532020202020
+R1MMC raw load rejected: -22
+Error: -38
+```
+
+由此验证 mainline MMC LBA `0x6000` 确实读取到原厂 trust 的 `TOS     ` header，且读取块数完整。
+`-22` 是预期的非 FIT 拒绝；最终 `-38` 仍是 raw 失败后进入未实现 FS fallback 的结果，不是 MMC
+错误。A4 阶段完成，但设备从未被写入。
+
+为满足引导区写入前的恢复门槛，新增 `scripts/preflight-r1-emmc-install.sh`。脚本本地先锁定：
+
+```text
+parameter-idb.img  SHA-256 66aedcbf5f9e9070c731afa6e7ba1d1982eacba8ad7ff7c37dddd131b4c662e1
+trust.img          SHA-256 2b0e823316de63e255a2194e305100f8db104d3dd98efcd8e30055c64105db45
+IDB restore slice  SHA-256 5fd0979fbbecbde4e4c00555c04c739c9769b18923009bc715c012201afeaa13
+FIT restore slice  SHA-256 1c4bc724e6a881db0f5d1aa0e862522a2db305e9c83eb752c7f549e8e92ed519
+```
+
+随后只允许 `ld/rci/rid/rfi/rl`，检查 A223、Samsung eMMC、15,269,888-sector 容量，并对
+Rockchip LBA `0x40..0xa7` 和 `0x4000..0x464e` 各读取两次：两次结果必须相同，且必须逐字节
+等于上述原始恢复切片。脚本不含 `wl/ef/rd`，不会改变 eMMC。下一实机命令：
+
+```sh
+sudo scripts/preflight-r1-emmc-install.sh
+```
+
+首轮运行在 `ld` 发现原始 `Maskrom` 后阻塞于 `rci`：原始 BootROM 枚举尚未运行 eMMC usbplug
+协议，脚本也没有给查询设置超时。用户以 `Ctrl+C` 中止；在阻塞点之前没有执行 `rl`，更没有
+写入。预检脚本已修正为先用 8 秒限时 `rci` 探测；若不可用，只对 RAM 执行一次已实机验证且
+SHA-256 固定为 `13be7694...` 的 `rk322x_loader_v1.06.237.bin` `db`，等待重新枚举后再查询。
+所有 `rci/rid/rfi/rl` 也增加明确超时。该 `db` 只下载 DDR/usbplug 到 RAM，脚本仍不含 eMMC
+写入、擦除或复位命令。
+
+修正版预检成功完成真 MaskROM → RAM usbplug、A223、Samsung eMMC 与容量查询，并对
+`rl 0x40 0x68` 连续读取两次；两次设备读取彼此一致，但与最初从 `parameter-idb.img + 0x40`
+生成的参考片从第一个字节就不同，脚本按设计停止，trust 尚未读取，设备未改变。
+
+回查备份内容发现：`parameter-idb.img` 在 offset 0 为 `PARM`，随后每 1 MiB 重复一次 parameter，
+而其 sector 64 全零。它是早期厂商 Rockusb 会话暴露的 parameter/逻辑视图，不包含当前 RAM
+usbplug 在 raw sector 64 返回的实际 ID block，因此旧比较基准错误。U-Boot 官方 Rockchip
+[flashing 文档](https://docs.u-boot.org/en/stable/board/rockchip/rockchip.html)（访问于
+2026-08-11）规定 MMC idbloader 位于 sector 64；Rockchip Linux 的 `rkdeveloptool` commit
+[`304f0737/main.cpp`](https://github.com/rockchip-linux/rkdeveloptool/blob/304f073752fd25c854e1bcf05d8e7f925b1f4e14/main.cpp)
+也在 `upgrade_loader()` 调用 `RKU_WriteLBA(64, ...)`。同 commit 的
+[`RKComm.cpp`](https://github.com/rockchip-linux/rkdeveloptool/blob/304f073752fd25c854e1bcf05d8e7f925b1f4e14/RKComm.cpp)
+证明主机端把用户 LBA 原样放入 CBW；偏移/虚拟化来自设备端 loader 是结合源码与 R1 证据得到
+的推断。
+
+预检现改为：raw IDB 两次读取必须一致；首次通过后将该 53,248-byte 原件保存到 gitignored
+`backup/boot/r1-emmc-user-idb-original-0x40-0xa7.img`，后续每次都必须与它逐字节一致；trust/FIT
+目标仍与 `trust.img` 的前 1,615 sectors 比较。这里只新增主机恢复备份，不写设备。
+
+第二轮预检确认 raw IDB 两次读取完全一致，并保存为：
+
+```text
+52c91233878ba72f8470be2aceaa0c8ff3c5c158120475c94f9c5cf187d82783  backup/boot/r1-emmc-user-idb-original-0x40-0xa7.img
+```
+
+但 usbplug `rl 0x4000 0x64f` 两次均得到 `LOADER  `，SHA-256 同为
+`b1e363a9da5bda0d03a10ba7e6e5d9c17cc4bf851f7917ad3f4125df8ae8999d`，而不是旧逻辑备份中
+`trust@0x4000` 的 `TOS     `。这与 A3 mainline MMC `0x4000 → LOADER` 完全相同，否定此前
+“usbplug 写 `0x4000`、SPL 读 `0x6000`”的拆分假说。正确解释是：parameter 的分区地址属于
+逻辑视图，raw eMMC、RAM usbplug `rl/wl` 与 mainline MMC 都必须加 `FwPartOffset=0x2000`。
+
+因此 A5 最终部署地址统一为：
+
+```text
+raw IDB write/read: 0x0040..0x00a7
+raw FIT write/read: 0x6000..0x664e
+raw misc begins:    0xa000  (parameter logical 0x8000 + 0x2000)
+```
+
+A5 只改变构建 manifest 的写入命名空间；SPL 仍使用已经由 A4 实机验证的 `0x6000`。主机重新
+pack/unpack 与 FIT payload 比对通过：
+
+```text
+81fea15cbc4b73cae51908b7e290c955eab074cb8b8db5260acb64f17c7811c5  build/artifacts/r1-emmc-idbloader-open-optee-a5.img
+bb2e5ab94c96f0184e01440993309cacb48738cf72f309f2b34dd38b4ae9847b  build/artifacts/r1-emmc-u-boot-open-optee-a5.itb
+1cf0d15303eb6438bec99cbeb0cd32d5b73978fb577c918a37a409f611241bae  build/artifacts/r1-emmc-spl-open-optee-a5.bin
+62c328f5273db88baec1daa3999ab0620ccc3add7ec89ba93195941b519dc29a  build/artifacts/r1-emmc-mmc-spl-ram-test-a5-loader.bin
+```
+
+预检已切换为 raw `0x6000` 双读并与 `trust.img` 前 1,615 sectors 比较；下一次通过后，才准备
+分别锁定 raw `0x40` 与 `0x6000` 的安装/恢复脚本。仍未获得或执行任何 eMMC 写入授权。
+
+第三轮预检完全通过：真 MaskROM 自动 RAM-only 下载 usbplug 后，A223、Samsung eMMC 和
+15,269,888-sector 容量均匹配；raw IDB 与 raw trust/FIT 两个目标分别连续读取两次且逐字节
+一致，最终恢复哈希为：
+
+```text
+52c91233878ba72f8470be2aceaa0c8ff3c5c158120475c94f9c5cf187d82783  raw 0x40..0xa7
+1c4bc724e6a881db0f5d1aa0e862522a2db305e9c83eb752c7f549e8e92ed519  raw 0x6000..0x664e
+```
+
+写入前只读阶段至此完成。新增 `scripts/install-r1-emmc-open-optee.sh` 与
+`scripts/restore-r1-emmc-original-boot.sh`。默认运行只打印 dry-run；安装确认串必须精确为
+`--confirm-write-raw-0x40-and-0x6000`，恢复确认串必须精确为
+`--confirm-restore-raw-0x40-and-0x6000`，并强制传入已验证 USB `R1_LOCATION_ID`。安装顺序为
+FIT 写入/读回后 IDB 最后写入/读回，异常时尝试用本轮原始切片恢复两个范围；恢复脚本独立执行
+同样的原始切片写回与比较。静态复核又补上 usbplug 重枚举后的 LocationID 二次确认、所有身份
+查询的超时，以及安装异常回滚后的两个范围读回比较；若回滚不能被确认，脚本会保留证据目录并
+明确要求不得断电。二者都不 reset，便于先启动 UART capture 再冷启动。本轮只生成、语法检查、
+`git diff --check` 并运行无确认参数的 dry-run，没有执行 `wl`。
+
+### eMMC 常驻 A5 首次精确写入（2026-08-12）
+
+用户明确授权 USB LocationID `502` 的 RK3229/Samsung eMMC raw `0x40` 和
+`0x6000` 两个范围，以及失败时在相同范围恢复原厂切片。实机执行：
+
+```sh
+sudo R1_LOCATION_ID=502 scripts/install-r1-emmc-open-optee.sh \
+  --confirm-write-raw-0x40-and-0x6000
+```
+
+脚本先重新运行完整只读预检：MaskROM 下只向 RAM 下载已验证 usbplug，
+LocationID 502、A223、Samsung eMMC 与 15,269,888 sectors 均匹配；raw IDB/FIT 两个
+原始目标各连续双读一致，恢复哈希分别为 `52c91233...` 和 `1c4bc724...`。
+
+随后按安全顺序写入：先把 SHA-256 `bb2e5ab9...` 的 A5 FIT 写入 raw
+`0x6000..0x664e` 并读回逐字节比较，再把 SHA-256 `81fea15c...` 的 A5
+IDB 写入 raw `0x40..0xa7` 并读回比较。两个 `wl` 与两个 `rl` 均成功，
+最终输出：
+
+```text
+A5 INSTALL WRITEBACK VERIFIED
+Evidence directory: /tmp/r1-emmc-install.IapKsC
+```
+
+未触发现场回滚，脚本没有 reset，其他 LBA 没有写入。这只验证了存储介质上的
+A5 字节与主机候选一致；BootROM 能否冷启动 IDB、SPL 能否从 MMC 装载 FIT、以及
+OP-TEE/U-Boot proper 交接仍需下一次预先捕获 UART 的冷启动验证，不在此时提前标记成功。
+
+### eMMC 常驻 A5 首次冷启动通过（2026-08-12）
+
+在 picocom 以 1,500,000 baud、8N1、无流控预先打开日志后，对 R1 完全断电三秒并
+不按 MaskROM 键重新上电。首次 eMMC 冷启动完整进入 U-Boot proper 提示符。
+关键实机证据为：
+
+```text
+DDR Version V1.06 20171026
+U-Boot SPL 2026.10-rc1-00121-g3ceba8432bef-dirty
+Trying to boot from MMC1
+R1MMC sector=6000 count=1 got=1 hdr=d00dfeed00000600
+I/TC: OP-TEE version: 3.7.0-1-ga34a269b7-dev
+I/TC: Initialized
+Primary CPU switching to normal world boot
+U-Boot 2026.10-rc1-00121-g3ceba8432bef-dirty
+DRAM:  512 MiB (total 480 MiB)
+MMC:   mmc@30020000: 0
+=>
+```
+
+`d00dfeed` 是 FDT/FIT big-endian magic，同时 `count=1 got=1` 直接证明常驻 SPL 的 MMC
+块读成功；OP-TEE `Initialized` 后 U-Boot proper 继续运行，证明 secure → normal
+world 转交成功。本次没有使用 `rkdeveloptool db`、YMODEM 或 USB FIT 下载，因而
+已验证 BootROM → vendor DDR → mainline SPL → open OP-TEE → mainline U-Boot proper
+的 eMMC 常驻自举链。该阶段完成；尚未验证的是从这个常驻 U-Boot 启动当前
+Linux FIT 后的四核、eMMC、Wi-Fi、Bluetooth 与 uptime >30 s 回归。
+
+### 常驻 U-Boot 的 DFU RAM Linux 回归（2026-08-12）
+
+首次执行 DFU 主机脚本时，物理 USB 尚未重新枚举为 DFU gadget，`dfu-util` 报
+`No DFU capable USB device available`；该失败发生在主机枚举阶段，没有传输 FIT，也没有
+访问 eMMC。重新插拔 USB 数据线后，`scripts/usb-dfu-r1-linux.py` 完成 A1r9 FIT 下载；
+U-Boot `iminfo` 识别 FIT，并对 kernel、initramfs、DTB 的三个 SHA-256 全部输出 `+`。
+
+随后无前缀的 `bootm 6a800000` 只打印 usage。源码与实机行为一致：地址含
+字母 `a` 但没有 `0x` 前缀时，`do_bootm()` 的参数判别把它当成非法子命令。正确的
+单行命令因而修正为：
+
+```text
+setenv dfu_alt_info 'linux-fit ram 6a800000 01000000' && dfu 0 ram 0 && iminfo 0x6a800000 && bootm 0x6a800000#config-1
+```
+
+用户重新进入后已由该 A1r9 FIT 到达 rescue shell，验证常驻 U-Boot → DFU RAM FIT
+→ Linux/initramfs 的路径。本轮尚未提供 `cpu/online`、uptime、Wi-Fi 和 Bluetooth 回归输出，
+所以这些检查继续保留为下一步，不由“进 shell”推断为已重测。
