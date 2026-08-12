@@ -154,6 +154,56 @@ USB 首次未枚举导致 `dfu-util` 未找到设备，重新插拔数据线后 
 `0x6a800000`；无 `0x` 的含字母地址会被 `bootm` 误当子命令。四核、>30 s、Wi-Fi
 与 Bluetooth 本次尚未重新输出证据，仍保留为下一项回归。
 
+下一外设阶段转入音频硬件。用户实物确认 DSP 完整型号为 `AK7755EN`；AKM
+官方资料确认其为 36-pin HVQFN、RAM-based DSP，支持 I²C/SPI 控制。Audio I2C A1
+已在主机构建：完全复用 A1r9 kernel/initramfs，DT 只启用 I2C1 100 kHz，没有
+I2C client，不操作 AK7755EN PDN、功放 shutdown/mute 或任何总线 payload。FIT 的三个
+payload 已解包逐字节核对，下一步 RAM-only 实机只验证 controller/clock/pinmux 及旧功能回归。
+Audio I2C A1 随后实机通过：`/dev/i2c-1` 已创建，GPIO0_A2/A3 被
+`11060000.i2c` 以 `i2c1-xfer` 占用，`pclk_i2c1` 已 prepare 且可按需 gate；Wi-Fi 固件和
+BCM4345C0 build 0124 仍正常。AK7755EN PDN 与功放两脚仍未申请、未切换。数据手册
+已确认无寄存器副作用的身份命令为 `0x60`、期望返回 `0x55`；下一步先读取
+三个未托管 GPIO 的当前方向/实际电平，再设计功放保持 shutdown+mute 的 PDN A2。
+该只读采样因串口粘贴把 `32` 与下一条 `echo` 连成 `32echo`，GPIO3 三个返回值无法可靠
+对应到 DR/DDR/EXT_PORT，故不把它们当作电平结论。Audio A2 已改为确定性安全链：先令
+TPA3118D2 SDZ=low、MUTE=high，再令 AK7755EN PDN=high；I2S/ASoC 仍关闭。initramfs
+新增静态 `r1-ak7755-id`，只对 `/dev/i2c-1` 地址 `0x19` 执行一次 command `0x60` +
+repeated-start 读一字节。A2 FIT 已完成主机构建、DT 审计和三个 payload 的解包逐字节核对，
+当前默认 DFU 脚本已指向它。A2 随后实机通过：debugfs 与 GPIO EXT_PORT 同时确认
+GPIO35=high、GPIO111=low、GPIO113=high，功放保持 shutdown+mute；身份工具得到
+`AK7755EN device_id=0x55 expected=0x55` 且退出码为 0。因此 R1 的 I2C1 `0x19`
+已由器件定义的身份事务确认为 AK7755EN，而不只是由原厂 DT 名称推断。下一步先回归本版
+四核、uptime >30 s、Wi-Fi 与 Bluetooth，再从原厂驱动/日志提取最小初始化和 DSP RAM
+下载边界；在此之前不解除功放安全状态。
+公开驱动溯源也已完成首轮审计：Rockchip 官方 `release-3.10`、`release-3.14`、
+`release-4.4`、`develop-4.4` 及三个旧产品分支的完整 tree 均没有 AK7755；公开代码索引
+也没有命中 R1 的 `rockchip,ak7755-audio`、`ak7755_pram_data2.bin` 或 CRC 日志。
+用户新找到的 hello/kasa Linux 3.10 `ak7755.c` 改变了源码边界：它是 AKM 版权、
+GPL-2.0-or-later 的完整旧式 ASoC codec driver，具有 I²C/SPI、`ak7755-AIF1`、
+PRAM/CRAM/OFREG/ACRAM firmware download 和 CRC16。其 DT/DAI/文件名指纹与 R1 完全对应；
+更强的实证是 R1 data2 的 `B8/B4/B2` 命令头与之相同，按其算法重算 PRAM/CRAM CRC
+得到 `0x9916/0x4453`，恰好匹配原厂日志。因此它很可能是 R1 codec driver 的上游祖先。
+代码仍有旧 ASoC API、全局状态、firmware 泄漏和把 CRC mismatch 当成功等 vendor-code
+缺陷，不能整文件搬入 5.10。Ingenic SDK `8addc4a9...` 与用户给出的 IPC-SDK
+`1986333e...` 则是同一家族的精简 OSS3 实现：后者头文件逐字节相同，C 文件只有五处
+板级差异，二者都没有 firmware/CRC，继续只作为寄存器交叉参考。
+用户补充的 Ambarella S2L `codec_ak7755.c` 又提供了 SPI mode 3、PDN 复位、采样率和 bypass
+寄存器初始化样本，但同样没有 DSP RAM 下载或 ASoC，而且文件头明确为 Ambarella
+confidential/proprietary；项目只记录固定提交和行为线索，不复制其代码或寄存器序列。
+现已改以长期基线 Linux 6.18.42 实现只支持 R1 I²C 的最小 component：ID、受控 reset、
+直接请求本地 data2 PRAM/CRAM、严格 size/命令头/CRC/错误返回和资源释放。A3 不注册 PCM
+DAI/sound card，不带 SPI、misc ioctl、OFREG/ACRAM 或内嵌 DSP program，且通过 supply
+dependency 始终保持 TPA3118D2 shutdown+mute。主机整核构建、最终 config/DTB、initramfs
+固件清单和 FIT 子镜像逐字节比较均已通过；当前 DFU 默认已指向 13.7 MiB 的
+`r1-linux-mainline-6.18-ak7755-fw-a3.itb`。A3 随后已在 RAM-only 实机通过：ID `0x55`、
+PRAM `0x9916`、CRAM `0x4453` 全部由驱动和器件硬件 CRC 链确认；Wi-Fi 扫描得到 28 个
+2.4/5 GHz BSS，Bluetooth LE 10 秒得到 20 个 report，四核 IPI 均活动。蓝牙管理初始化
+发生于 31.867 秒且之后完整执行 10 秒扫描，因此已越过 30 秒稳定性门槛。下一步为 Audio
+A4：保持功放 shutdown+mute，加入 DAI/I2S2/minimal machine card，只验证 ALSA 枚举和
+时钟合同，暂不播放声音。
+原厂 data2 二进制没有公开再分发许可，仍只留在 `backup/` 和本地生成的 initramfs，不能
+提交公开仓库。
+
 为缩短重复进入 U-Boot 的时间，已确认不能简单把 SPL 与 ITB 再次拼接：当前 USB472 本来就是
 39 KiB SPL 紧跟约 797 KiB FIT，而实机地址探针已经证明 MaskROM `0x472` 有效交付窗口只覆盖
 SPL，后续 payload 不可靠。新的 RAM-only 加速候选改为 SPL 直接轮询 UART2 RX 寄存器，绕过
@@ -255,7 +305,8 @@ secure INTID55/APR0 的完整定位和 clean kernel 验证。下一实机步骤�
 9. 真 MaskROM 下独立 `TARGET_PHICOMM_R1` 已进入现代 U-Boot 提示符；开源 OP-TEE FIT 曾得到 `FITF os=17 ret=0` 并推进到 OP-TEE 跳转边界。因 472 交付窗口限制，当前采用瘦身 SPL + UART YMODEM 外置 FIT：实机已到 `Trying to boot from UART` 并输出 `C`，证明接收端已就绪。首传的 `sz -Y` 实际发出 ZMODEM `rz` 前导，故被 YMODEM 接收端 NAK；本机伪串口已复现，属于主机协议错误而非 R1、FIT 或 OP-TEE 失败。下一次仅用串口终端的本地命令功能（必须独占同一串口，1500000 8N1、无流控）运行 `sb -k -vv build/artifacts/r1-ymodem-fit.itb`；成功标准首先是 `Loaded 796672 bytes`，随后记录 `sm`、`L/M/N/O/P/Q/R/T`。全程只执行 RAM `db`，不覆盖 parameter/idb、U-Boot、trust。
 10. YMODEM 已实机完整传入 FIT，开源 OP-TEE `3.7.0` 已初始化并提供 PSCI v1.0。secure SPL 证明 MaskROM/RockUSB 在进入 TEE 前遗留唯一 active 的 USB OTG INTID 55 与 APR0=`1`；精确清理后 `GC` 为 RPR=`0xff`、APR0=`0`、无 active 位。clean v8 随后正常越过旧 `No ATAGs?` 边界，CPU0/CPU1 online，于 2.078 秒执行 `/init` 并进入 shell；用户确认 uptime 约 700 秒。原 CPU0 IRQ/SGI 死锁及当前 RAM-only SMP 冻结已解决。
 11. clean 四核 v9 已用修正后的 INTID55 cleanup SPL 实机通过。白名单救援 v11 的最小-DT A 线四核正常，完整 eMMC DT 的 B1/B2 都只读枚举成功但 CPU1–CPU3 未 online；B2 已否定 arch-timer，C2 又否定 Cortex-A7 814220 单变量。C1 用同一完整 B2 DT/initramfs 换回 multi_v7 v9 后四核与 eMMC 同时通过，现作为外设工作基线；B3 CRU A/B 延后到最小化阶段。
-12. 已从 C1 构建 USB Host A1：只开启原厂实机日志证明存在的三组 EHCI/OHCI Host，继续禁用 DWC2 OTG/INTID55 路径；主机侧 DT/FIT 审计通过，下一步 RAM-only 上板枚举 root hub 和外接 U 盘。
+12. 已从 C1 构建 USB Host A1，但用户确认成品没有可用 USB 外设口，该支线已降级为 SoC/DFU 研究产物；板载 SDIO Wi-Fi、UART Bluetooth（含 BCM4345C0 HCD build 0124、AES/CMAC）均已实机通过。
+13. eMMC A5 常驻开源启动链已经写后读回并冷启动通过；Linux 仍只经 U-Boot DFU 装入 RAM。Linux 6.18.42 Audio A3 已实机确认 AK7755EN ID、PRAM/CRAM 硬件 CRC、四核、>30 s、2.4/5 GHz Wi-Fi 和 Bluetooth LE 全部通过。下一步为 A4 DAI/I2S2/machine-card 枚举，功放继续 shutdown+mute，不写 eMMC、不播放音频。
 
 ## 文档导航
 
@@ -353,6 +404,7 @@ secure INTID55/APR0 的完整定位和 clean kernel 验证。下一实机步骤�
 | `build/tee/rk322x_tee_os.bin` | 按固定 commit 重新下载并验证的开源 OP-TEE（423,248 B，SHA-256 `ff56bb3b...`）；构建时复制为 `build/u-boot/tee.bin`，不提交仓库 |
 | `build/artifacts/r1-phicomm-r1-uboot-optee-os.config` | 上述开源 OP-TEE RAM-only 候选的完整 U-Boot 配置 |
 | `build/artifacts/mainline-first-shell-20260805.log` | 主线 Linux 6.18.42 首次进入救援 shell 的完整串口日志 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-fw-a3.itb` | 已实机通过的 RAM-only Audio A3：Linux 6.18.42、四核/无线回归配置、无 DAI 的 AK7755 ID + PRAM/CRAM 严格 CRC verifier；13.7 MiB，SHA-256 `3b5a4d788f7f66ab57c5dfc62d554b89754594c5a8473be2aff82a63a8e4679f` |
 
 ## 安全边界
 

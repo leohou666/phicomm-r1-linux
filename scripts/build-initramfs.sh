@@ -11,6 +11,8 @@ regdb_signature_source=${R1_REGULATORY_DB_SIGNATURE:-/usr/lib/firmware/regulator
 brcm43455_clm_source=${R1_BRCM43455_CLM_BLOB:-/usr/lib/firmware/brcm/brcmfmac43455-sdio.clm_blob.xz}
 wifi_scan_tool=${R1_WIFI_SCAN_TOOL:-}
 bluetooth_mgmt_tool=${R1_BLUETOOTH_MGMT_TOOL:-}
+ak7755_id_tool=${R1_AK7755_ID_TOOL:-}
+include_ak7755_firmware=${R1_AK7755_FIRMWARE:-0}
 artifact_tag=${INITRAMFS_ARTIFACT_TAG:-}
 artifacts="$project_root/build/artifacts"
 rootfs=$(mktemp -d "$project_root/build/initramfs.XXXXXX")
@@ -135,6 +137,35 @@ if [ -n "$bluetooth_mgmt_tool" ]; then
 	install -m 0755 "$bluetooth_mgmt_tool" "$rootfs/bin/r1-btmgmt"
 	install -m 0755 "$project_root/initramfs/r1-bt-coexist-test" \
 		"$rootfs/bin/r1-bt-coexist-test"
+fi
+
+if [ -n "$ak7755_id_tool" ]; then
+	[ -x "$ak7755_id_tool" ] || {
+		printf 'AK7755EN identification tool is missing or not executable: %s\n' \
+			"$ak7755_id_tool" >&2
+		exit 1
+	}
+	if ! file "$ak7755_id_tool" | grep -q \
+		'ELF 32-bit.*ARM.*statically linked'; then
+		printf 'AK7755EN identification tool must be a static 32-bit ARM ELF: %s\n' \
+			"$ak7755_id_tool" >&2
+		exit 1
+	fi
+	install -m 0755 "$ak7755_id_tool" "$rootfs/bin/r1-ak7755-id"
+fi
+
+if [ "$include_ak7755_firmware" = 1 ]; then
+	ak7755_firmware_dir="$project_root/backup/extracted/system/vendor/firmware"
+	for firmware in ak7755_pram_data2.bin ak7755_cram_data2.bin; do
+		[ -f "$ak7755_firmware_dir/$firmware" ] || {
+			printf 'AK7755 firmware is missing: %s\n' \
+				"$ak7755_firmware_dir/$firmware" >&2
+			exit 1
+		}
+		mkdir -p "$rootfs/lib/firmware"
+		install -m 0644 "$ak7755_firmware_dir/$firmware" \
+			"$rootfs/lib/firmware/$firmware"
+	done
 fi
 
 for applet in \

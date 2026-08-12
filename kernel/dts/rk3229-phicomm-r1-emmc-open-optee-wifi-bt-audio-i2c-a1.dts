@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+
+/*
+ * Phicomm R1 AK7755EN control-bus A1.
+ *
+ * Keep the verified four-core/eMMC/Wi-Fi/Bluetooth A1r9 hardware contract.
+ * This first audio step enables only the RK3229 I2C1 controller and its
+ * standard GPIO0_A2/A3 pinmux.  It intentionally declares no I2C clients and
+ * does not touch AK7755EN PDN or the TPA3118D2 shutdown/mute GPIOs.
+ */
+
+#include "rk3229-phicomm-r1-emmc-open-optee-wifi-bt-serdev-a1r6.dts"
+
+&i2c1 {
+	clock-frequency = <100000>;
+	status = "okay";
+};

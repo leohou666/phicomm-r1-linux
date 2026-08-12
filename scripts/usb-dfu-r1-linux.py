@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download the verified R1 Linux rescue FIT through U-Boot DFU RAM.
+"""Download the hash-pinned R1 Linux rescue FIT through U-Boot DFU RAM.
 
 The target must already be at the U-Boot ``dfu 0 ram 0`` command.  This
 script only selects the ``linux-fit`` RAM alternate, downloads one FIT, and
@@ -20,9 +20,9 @@ from desktop_notify import notify
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FIT = (
-    ROOT / "build/artifacts/r1-linux-multiv7-v9-wifi-bt-mgmt-a1r9.itb"
+    ROOT / "build/artifacts/r1-linux-mainline-6.18-ak7755-fw-a3.itb"
 )
-DEFAULT_FIT_SHA256 = "567a6775dc1bdbbc82180eda5b229588d4892dceb8d60081564cc14435391882"
+DEFAULT_FIT_SHA256 = "3b5a4d788f7f66ab57c5dfc62d554b89754594c5a8473be2aff82a63a8e4679f"
 
 
 def sha256(path: Path) -> str:
@@ -35,7 +35,7 @@ def sha256(path: Path) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Send one verified Linux FIT to the R1 U-Boot DFU RAM alternate."
+        description="Send one hash-pinned Linux FIT to the R1 U-Boot DFU RAM alternate."
     )
     parser.add_argument("--fit", type=Path, default=DEFAULT_FIT)
     parser.add_argument(

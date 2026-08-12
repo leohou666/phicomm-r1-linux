@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (GPL-2.0-or-later OR MIT)
+
+/*
+ * Phicomm R1 AK7755 firmware/CRC A3.
+ *
+ * Keep the external TPA3118D2 in shutdown and mute.  The codec driver owns
+ * PDN and verifies only ID plus data2 PRAM/CRAM download.  I2S2 and any sound
+ * card remain disabled, so a successful probe cannot produce audio.
+ */
+
+#include "rk3229-phicomm-r1-emmc-open-optee-wifi-bt-audio-i2c-a1.dts"
+
+/ {
+	amp_shutdown_safe: regulator-amp-shutdown-safe {
+		compatible = "regulator-fixed";
+		regulator-name = "amp_shutdown_safe";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&gpio3 RK_PB7 GPIO_ACTIVE_LOW>;
+		regulator-boot-on;
+		regulator-always-on;
+	};
+
+	amp_mute_safe: regulator-amp-mute-safe {
+		compatible = "regulator-fixed";
+		regulator-name = "amp_mute_safe";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&gpio3 RK_PC1 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+		regulator-always-on;
+		vin-supply = <&amp_shutdown_safe>;
+	};
+};
+
+&i2c1 {
+	ak7755: audio-dsp@19 {
+		compatible = "akm,ak7755";
+		reg = <0x19>;
+		reset-gpios = <&gpio1 RK_PA3 GPIO_ACTIVE_LOW>;
+		safe-supply = <&amp_mute_safe>;
+		akm,pram-firmware = "ak7755_pram_data2.bin";
+		akm,cram-firmware = "ak7755_cram_data2.bin";
+	};
+};
+
+&i2s2 {
+	status = "disabled";
+};

@@ -1,0 +1,49 @@
+/dts-v1/;
+
+/ {
+	description = "Phicomm R1 Linux 6.18 AK7755 safe firmware A3";
+	#address-cells = <1>;
+
+	images {
+		kernel-1 {
+			description = "Linux 6.18.42 R1 four-core Wi-Fi Bluetooth AK7755";
+			data = /incbin/("../build/artifacts/zImage-mainline-6.18-ak7755-fw-a3");
+			type = "kernel";
+			arch = "arm";
+			os = "linux";
+			compression = "none";
+			load = <0x62000000>;
+			entry = <0x62000000>;
+			hash-1 { algo = "sha256"; };
+		};
+
+		ramdisk-1 {
+			description = "R1 rescue initramfs with wireless and AK7755 firmware";
+			data = /incbin/("../build/artifacts/r1-initramfs-mainline-6.18-ak7755-fw-a3.cpio.gz");
+			type = "ramdisk";
+			arch = "arm";
+			os = "linux";
+			compression = "gzip";
+			hash-1 { algo = "sha256"; };
+		};
+
+		fdt-1 {
+			description = "Phicomm R1 open OP-TEE Wi-Fi Bluetooth AK7755 DTB";
+			data = /incbin/("../build/artifacts/rk3229-phicomm-r1-mainline-6.18-ak7755-fw-a3.dtb");
+			type = "flat_dt";
+			arch = "arm";
+			compression = "none";
+			hash-1 { algo = "sha256"; };
+		};
+	};
+
+	configurations {
+		default = "config-1";
+		config-1 {
+			description = "R1 Linux 6.18 AK7755 safe firmware A3";
+			kernel = "kernel-1";
+			ramdisk = "ramdisk-1";
+			fdt = "fdt-1";
+		};
+	};
+};

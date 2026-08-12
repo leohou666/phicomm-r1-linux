@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: (GPL-2.0-or-later OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/sound/akm,ak7755.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: AKM AK7755 audio DSP
+
+maintainers:
+  - Phicomm R1 Linux contributors
+
+description: |
+  The AK7755 is a RAM-based audio DSP with ADC, DAC and serial audio ports.
+  Program and coefficient RAM images are downloaded through I2C or SPI.
+  The initial binding supports the verified I2C control path only.
+
+properties:
+  compatible:
+    const: akm,ak7755
+
+  reg:
+    maxItems: 1
+
+  reset-gpios:
+    description: Active-low hardware power-down/reset input.
+    maxItems: 1
+
+  safe-supply:
+    description: Board-level prerequisite that keeps downstream amplifiers safe.
+
+  akm,pram-firmware:
+    description: PRAM image including its AK7755 RAM-write command header.
+    $ref: /schemas/types.yaml#/definitions/string
+    default: ak7755_pram_data2.bin
+
+  akm,cram-firmware:
+    description: CRAM image including its AK7755 RAM-write command header.
+    $ref: /schemas/types.yaml#/definitions/string
+    default: ak7755_cram_data2.bin
+
+required:
+  - compatible
+  - reg
+  - reset-gpios
+  - safe-supply
+
+additionalProperties: false
+
+examples:
+  - |
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        audio-dsp@19 {
+            compatible = "akm,ak7755";
+            reg = <0x19>;
+            reset-gpios = <&gpio1 3 1>;
+            safe-supply = <&amp_mute_safe>;
+            akm,pram-firmware = "ak7755_pram_data2.bin";
+            akm,cram-firmware = "ak7755_cram_data2.bin";
+        };
+    };
+...

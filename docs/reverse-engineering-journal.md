@@ -4929,3 +4929,385 @@ setenv dfu_alt_info 'linux-fit ram 6a800000 01000000' && dfu 0 ram 0 && iminfo 0
 用户重新进入后已由该 A1r9 FIT 到达 rescue shell，验证常驻 U-Boot → DFU RAM FIT
 → Linux/initramfs 的路径。本轮尚未提供 `cpu/online`、uptime、Wi-Fi 和 Bluetooth 回归输出，
 所以这些检查继续保留为下一步，不由“进 shell”推断为已重测。
+
+### AK7755EN Audio I2C A1 主机候选（2026-08-12）
+
+用户实物确认 DSP 完整型号为 `AK7755EN`。AKM 官方
+[`AK7755EN` product page](https://www.akm.com/global/en/products/audio-voice-dsp/lineup-audio-voice-processor/ak7755en/)
+（访问于 2026-08-12）说明该器件是 36-pin HVQFN、RAM-based audio DSP，集成
+mono ADC、stereo codec、mic/line-out amplifier，支持 I²C/SPI 控制，AD/DA 最高
+96 kHz。这是型号级来源；R1 上 I2C1 `0x19`、I2S2 和 GPIO 映射继续由原厂
+DT/日志与实物支持。
+
+当前主机没有 ARM Linux sysroot/BlueZ/D-Bus 源码，只有 `arm-none-eabi` 裸机工具链；
+因而不在 rescue initramfs 中临时堆叠一套不可维护的完整 BlueZ 根文件系统。进入
+音频硬件时仍遵守单变量：新 DTS 继承已验证 A1r9 板级 DT，只将 RK3229
+I2C1 (`0x11060000`) 以 100 kHz 启用。它没有声明任何 I2C child，不申请
+AK7755EN PDN，不申请 TPA3118D2 shutdown/mute，不发送 I2C payload，也不启用
+I2S/ASoC。
+
+主机构建、反编译与 FIT 解包核对通过：I2C1 最终 `status="okay"`、
+`clock-frequency=100000`，child 列表为空；kernel 和 initramfs 与 A1r9 逐字节相同。
+
+```text
+7cdf4ed322c3c25387151082ff84d00bf67216e6ca8029c8769eb9380ad80e49  build/artifacts/rk3229-phicomm-r1-wifi-bt-audio-i2c-a1.dtb
+a56bfd890e18b7f532174b3e3042f1396efc01f947a0a2bfa6f53ec62907d060  build/artifacts/r1-linux-multiv7-v9-wifi-bt-audio-i2c-a1.itb
+```
+
+该候选尚未上板。首轮只验证 `11060000.i2c` adapter、GPIO0_A2/A3 pinmux、
+PCLK_I2C1 和四核/无线旧功能；不在没有准确寄存器资料时用通用 `i2cdetect`盲扫音频总线。
+
+Audio I2C A1 实机已通过控制器阶段：`/dev/i2c-0` 和 `/dev/i2c-1` 同时存在；
+pin 2/3 (GPIO0_A2/A3) 都由 `11060000.i2c` 的 `i2c1-xfer` function 占用；
+`pclk_i2c1` prepare count 为 2，空闲时 enable count 为 0，符合按需 clock gating。启动后
+brcmfmac 固件与 BCM4345C0 HCD build 0124 均仍正常。`gpio35/111/113` 未出现在
+debugfs GPIO consumer 列表，pinmux 也显示 GPIO1_A3、GPIO3_B7、GPIO3_C1 全部 unclaimed，
+证明 A1 确实没有隐式控制 DSP/功放。
+
+AKM AK7755EN 数据手册 revision `014006643-E-01` 的 I²C read sequence 要求先以 write
+slave address 写入 read command，再 repeated-start 为 read slave address；Device Identification command
+为 `0x60`，返回一字节 `01010101b` (`0x55`)。这比 SMBus quick 或全总线扫描更有
+身份区分力，且不修改 control register。TI TPA3118D2 官方数据手册同时确认：
+SDZ low 使输出 Hi-Z，MUTE high 使输出 Hi-Z。下一步 A2 必须保持这两个安全电平，
+再拉高 AK7755EN PDN、等待至少 1 ms 并只执行 `0x60` 读取。在生成 A2 前，先对
+GPIO1/GPIO3 的 direction/data/external-port 寄存器做只读采样，保留当前上电基线。
+
+### AK7755EN Audio A2 安全身份读取候选（2026-08-12）
+
+首轮只读 `devmem` 输出不能用于判断 GPIO3 基线：串口粘贴将第三条命令的 `32` 与下一条
+`echo` 拼成 `32echo`，导致一条读取失败，剩余数值也不能无歧义对应到 DR、DDR 与
+EXT_PORT。GPIO1 的 DR/DDR 均读到零，但第三个 EXT_PORT 结果同样缺失。因此不从该组输出
+推断引脚实际电平，A2 直接建立确定性的安全状态。
+
+A2 DTS 继承已经实机通过的 Audio I2C A1，并以三个 always-on fixed regulator 的 supply
+dependency 建立顺序：先把 TPA3118D2 SDZ (GPIO3_B7/global 111) 置 low，再把 MUTE
+(GPIO3_C1/global 113) 置 high，最后把 AK7755EN PDN (GPIO1_A3/global 35) 置 high，
+PDN 节点声明 2 ms startup delay。I2S/ASoC 仍禁用，功放始终同时保持 shutdown 与 mute。
+反编译 DT 审计确认 SDZ gpio flag 为 active-low，MUTE/PDN 为 active-high，依赖与延时均存在。
+
+新增 freestanding ARM 工具 `r1-ak7755-id`，通过 `/dev/i2c-1` 的 `I2C_RDWR` 提交两个
+message：对 `0x19` 写一字节 `0x60`，随后 repeated-start 读一字节。它不扫描其他地址、
+不写 control register、不加载 PRAM/CRAM。返回 `0x55` 才退出 0。该事务来自 AKM
+[`AK7755EN datasheet`](https://www.mouser.com/datasheet/3/5939/1/ak7755en_en_datasheet.pdf)，
+revision `014006643-E-01` (2018-08)。功放安全电平来自 TI
+[`TPA3118D2 datasheet`](https://www.ti.com/lit/ds/symlink/tpa3118d2.pdf)。
+
+主机构建、FIT hash 检查与三个 payload 解包逐字节比较均通过：
+
+```text
+10a0a1797ba551be8a286b2120b5324351302fe6470688b2be09159b68914d88  build/artifacts/r1-ak7755-id
+6895ca4ec9332344e68e8e34dde31ff8200e721741126bbb071e928d7d66fdc4  build/artifacts/r1-initramfs-wifi-bt-audio-ak7755-a2.cpio.gz
+8b2f83c2512c81d55b533f632c81df2264e6f61b05c0d51b18b50724b1ebfcef  build/artifacts/rk3229-phicomm-r1-wifi-bt-audio-ak7755-a2.dtb
+72e154e71cf9c0156617bfbe2976f1cccc915e6919933d82704cfffe5beba424  build/artifacts/r1-linux-multiv7-v9-wifi-bt-audio-ak7755-a2.itb
+```
+
+这是主机候选，尚未上板。实机必须先从 debugfs/EXT_PORT 验证 GPIO35=high、GPIO111=low、
+GPIO113=high，确认功放保持安全后，才执行 `/bin/r1-ak7755-id`；不得把 FIT 构建成功写成
+AK7755EN 身份已经验证。
+
+### AK7755EN Audio A2 实机身份验证通过（2026-08-12）
+
+用户经常驻 U-Boot 的 DFU RAM alternate 启动 A2。首先只读 debugfs GPIO 状态：
+
+```text
+gpio-35  (|regulator-ak7755-pdn) out hi
+gpio-111 (|regulator-amp-shutdo) out lo ACTIVE LOW
+gpio-113 (|regulator-amp-mute-s) out hi
+```
+
+随后分别读取 GPIO1/GPIO3 EXT_PORT，避免此前多行粘贴造成的歧义：
+
+```sh
+/bin/busybox devmem 0x11120050 32
+/bin/busybox devmem 0x11140050 32
+```
+
+实机返回 `0xFFFE9F3E` 和 `0x128261FE`。前者 bit3=1；后者 bit15=0、bit17=1，
+与 debugfs 独立一致地证明 AK7755EN PDN high、TPA3118D2 SDZ low、MUTE high。
+确认功放仍同时处于 shutdown 与 mute 后，执行唯一身份事务：
+
+```text
+# /bin/r1-ak7755-id
+AK7755EN device_id=0x55 expected=0x55
+# echo "ak7755_rc=$?"
+ak7755_rc=0
+```
+
+这不是通用地址 ACK：返回值与 AKM Device Identification command 的固定值匹配，故
+R1 I2C1 地址 `0x19` 的器件身份已确认为 AK7755EN。A2 阶段没有启用 I2S/ASoC、没有
+加载 PRAM/CRAM，也没有解除功放 shutdown/mute。该身份阶段完成；本次尚未重新提交
+CPU online、uptime、Wi-Fi 与 Bluetooth 输出，下一步先做旧功能回归，再提取原厂最小
+初始化序列。
+
+### AK7755 公开驱动源码溯源（2026-08-12）
+
+目标是优先找到 R1 原厂 AK7755 codec/machine driver 的可审计源码，避免直接从二进制
+猜寄存器。先通过 GitHub API 获取 Rockchip 官方历史分支和递归 tree，例如：
+
+```sh
+curl --http1.1 -L --fail \
+  'https://api.github.com/repos/rockchip-linux/kernel/git/trees/release-3.10?recursive=1' \
+  -o /tmp/r1-rockchip-release-3.10-tree.json
+rg -i 'ak7755' /tmp/r1-rockchip-release-3.10-tree.json
+```
+
+同样检查 `release-3.14`、`release-4.4`、`develop-4.4`、`others/kylin/brillo`、
+`others/miniarm` 和 `others/multi-os`，七个 tree 均为零命中。`release-3.10` 固定为
+`6c04d006ae881944d32c19e68b992d0bd5ab4fde`；其 `sound/soc/rockchip` 有 RK322x/I2S
+等公版驱动，但没有 AK7755 codec 或 `rockchip-ak7755` machine driver。公开代码索引对
+R1 精确字符串 `rockchip,ak7755-audio`、`ak7755,pdn-gpio`、
+`ak7755_pram_data2.bin`、`PRAM CRC success` 和 `CRAM CRC success` 同样没有源码命中。
+因此“R1 同源驱动未公开”是本轮检索结论，不等于证明网络任何角落都不存在副本。
+
+唯一找到的 Linux AK7755 实现位于 themactep/ingenic-sdk commit
+`8addc4a9acc93a4547dbd2a937f30a8c9745520a`：
+
+```text
+8b671c626b48c9a0d73bb6bbef3ffd3d30333bf93f1cf16699b80add50451d32  4.4.94/audio/a1/oss3/ex_codecs/ak7755_codec.c
+7a9f43d398c4de8ed5d87f7dee53554a815cdb12356d773994208e2c98742d15  4.4.94/audio/a1/oss3/ex_codecs/ak7755_codec.h
+```
+
+固定链接：[codec C](https://github.com/themactep/ingenic-sdk/blob/8addc4a9acc93a4547dbd2a937f30a8c9745520a/4.4.94/audio/a1/oss3/ex_codecs/ak7755_codec.c)、
+[register header](https://github.com/themactep/ingenic-sdk/blob/8addc4a9acc93a4547dbd2a937f30a8c9745520a/4.4.94/audio/a1/oss3/ex_codecs/ak7755_codec.h)。
+源码包含 combined I2C read、`0xC0..0xEA` 寄存器、mute、sample-rate、PDN 与
+POWERDOWN/STANDBY/RUN 状态；但是依赖 Ingenic 私有 OSS3 codec API，不是 ASoC。
+头文件虽列出 PRAM/CRAM/OFREG/ACRAM enum，C 文件没有 `request_firmware()`、RAM
+download 或 CRC 实现，所以不能重放 R1 已验证的 data2 启动路径。3.10 与 4.4 版本主要
+差异是板级 GPIO 和少量 mode 配置，也没有补上 firmware download。
+
+许可审计发现文件本身只有 `MODULE_LICENSE("GPL v2")`，没有 SPDX/版权头；仓库根
+[MIT LICENSE](https://github.com/themactep/ingenic-sdk/blob/8addc4a9acc93a4547dbd2a937f30a8c9745520a/LICENSE)
+标的是 2024 thingino，不能无条件推定覆盖所有被汇集的旧 kernel 文件。因此不把该源码
+复制进仓库，只记录固定来源并用于行为交叉检查。
+
+另一个一级来源是 Microchip 官方 Harmony v1.11
+[`Driver Libraries`](https://www.microchip.com/content/dam/mchp/documents/OTH/ProductDocuments/UserGuides/DriverLibraries_v111.pdf)
+第 188–199 页：其明确列出 production 级 `drv_ak7755.c`，依赖 PIC32 I2C/I2S driver。
+它可以帮助核对 AK7755 通用状态机，但不是 Linux/Rockchip 代码，也没有证明与 R1 data2
+算法相同。
+
+本轮结论：没有找到可直接移植的 R1 ASoC driver。下一步以 AKM 数据手册为规范、R1 原厂
+DT/日志/firmware 为实机证据、上述实现为次级交叉参考，先从原厂 zImage 恢复函数/命令边界，
+再编写最小 clean-room Linux 5.10 codec driver。功放继续保持 SDZ low + MUTE high，直到
+firmware 下载和 CRC 状态均可读回验证。
+
+### Ambarella AK7755 bootloader 样本审计（2026-08-12）
+
+用户提供了 GitHub 仓库
+[`nrnjnkr/dvt_factory_ak7755_HwCodec`](https://github.com/nrnjnkr/dvt_factory_ak7755_HwCodec/tree/cacdbbc9b9620ecc31e8b461758223e29fd55411)。
+GitHub API 显示该仓库是约 440 MB 的 Ooma Butterfleye Gen2/Ambarella S2L factory firmware
+SDK，而不是独立 Linux codec driver；仓库只有一次提交，作者 Niranjan K，提交时间
+2018-08-14，固定 commit 为 `cacdbbc9b9620ecc31e8b461758223e29fd55411`，commit tree 为
+`ec5e9b474657166989aa1c103d1b5b84f0d4825e`，GitHub 标记该提交未签名。
+
+递归 tree 中唯一以 `ak7755` 命名的源码是：
+
+```text
+Ooma-Butterfleye-Gen2FW/source/s2l_linux_sdk/ambarella/boards/btfl/bsp/iav/codec_ak7755.c
+SHA-256 e802cdaa19980789a2e1547d3f76c4d47ae37474850ba9b05ad49e57c99a2848
+191 lines, 5778 bytes
+```
+
+固定源码链接：[Ambarella `codec_ak7755.c`](https://github.com/nrnjnkr/dvt_factory_ak7755_HwCodec/blob/cacdbbc9b9620ecc31e8b461758223e29fd55411/Ooma-Butterfleye-Gen2FW/source/s2l_linux_sdk/ambarella/boards/btfl/bsp/iav/codec_ak7755.c)。
+本轮通过 GitHub API/固定 raw blob 读取并以 `rg` 审计，命令形式如下：
+
+```sh
+curl -L --fail \
+  'https://api.github.com/repos/nrnjnkr/dvt_factory_ak7755_HwCodec/git/trees/master?recursive=1' \
+  -o /tmp/r1-ak7755-hwcodec-tree.json
+curl -L --fail \
+  'https://raw.githubusercontent.com/nrnjnkr/dvt_factory_ak7755_HwCodec/cacdbbc9b9620ecc31e8b461758223e29fd55411/Ooma-Butterfleye-Gen2FW/source/s2l_linux_sdk/ambarella/boards/btfl/bsp/iav/codec_ak7755.c' \
+  -o /tmp/r1-oob-ak7755-codec.c
+sha256sum /tmp/r1-oob-ak7755-codec.c
+rg -ni 'pram|cram|ofreg|acram|crc|firmware|download|spi|i2c|bypass' \
+  /tmp/r1-oob-ak7755-codec.c
+```
+
+该文件是 Ambarella bootloader 的板级初始化函数，不是 Linux 驱动。它以 SPI mode 3、
+1 MHz 访问 AK7755，先将 PDN 拉低 2 ms 后拉高；随后配置 `0xC0..0xEA` 寄存器，支持
+8/16/48 kHz，并有明确标记为 `Bypass mode` 的三项寄存器更新。这使它可作为 AK7755
+通用 reset、串行格式和 bypass 行为的独立交叉线索。它不适合直接移植到 R1：R1 控制链
+已实机验证为 I2C1 `0x19`，而该样本走 SPI；文件没有 ASoC codec/machine driver，亦无
+PRAM/CRAM/OFREG/ACRAM、firmware download 或 CRC 代码，所以不能解释 R1 原厂 `data2`
+加载链。
+
+许可边界是硬限制，而不是普通的“仓库未放 LICENSE”：该源码头明确称其为 Ambarella
+confidential/proprietary，并禁止在没有签署 license agreement/NDA 时使用、复制、修改或
+制作衍生作品；仓库元数据也没有检测到 license。故本项目不复制、不改写该实现或其序列。
+后续只以 AKM 数据手册为寄存器规范，用该样本提示需要独立验证的假说；最有价值的新假说是
+在下载 DSP firmware 前先设计一个功放仍保持 shutdown+mute 的 AK7755 bypass 状态测试，
+但具体寄存器值必须从 AKM 资料和 R1 原厂行为独立恢复。
+
+### 找到与 R1 data2 链同源的 GPL ASoC driver（2026-08-12）
+
+用户继续提供两份固定源码。第一份是 hello/kasa commit
+[`762398dc7ceff508a4ac834ff93b14955d802328`](https://github.com/hello/kasa/blob/762398dc7ceff508a4ac834ff93b14955d802328/ambarella/kernel/linux-3.10/sound/soc/codecs/ak7755.c)
+的 Linux 3.10 `sound/soc/codecs/ak7755.c`；该提交作者 Jackson Chen、日期
+2017-04-24、tree `cf0b45ad5c7e227bd86fe1b01cb681ccaa474a59`，GitHub 标为 unsigned。
+第二份是 iesah/IPC-SDK commit
+[`1986333e26bd50a453edca5749433071cf88b390`](https://github.com/iesah/IPC-SDK/blob/1986333e26bd50a453edca5749433071cf88b390/opensource/drivers/audio/oss3/ex_codecs/ak7755_codec.c#L231)，
+提交作者 iesah、日期 2023-11-28、tree `62c1806bea29268384941c2ba764e22149635220`，
+GitHub 签名验证为 valid。
+
+固定 blob 的本地审计结果：
+
+```text
+d8c61b6310cac3345b15610f36fc5cfbbdf65940446e206c0c27230438a366a8  kasa ak7755.c (2952 lines, 81303 bytes)
+e88a4b0eacd8cff7988f4d4a631a424a8531dab67abdc27e783d2667ab9769d3  kasa ak7755.h
+47e806015fd931083fb117a3965d27f2df7b196a6c1138048a808171992bf064  kasa ak7755_dsp_code.h
+9bd1d671a4fcc9fcf114b2530638e0cc71b8a0297c3b73ecafa9d95fe3f38986  kasa ak7755_pdata.h
+8c6a22346beb23ffd1c0f1d0c43045f99fb8f79c83c6946b768dfe81c1536ec1  IPC-SDK ak7755_codec.c (684 lines, 17973 bytes)
+7a9f43d398c4de8ed5d87f7dee53554a815cdb12356d773994208e2c98742d15  IPC-SDK ak7755_codec.h
+```
+
+Kasa 文件头表明这是 Asahi Kasei Microdevices 2014–2016 reference driver revision
+2.01，许可为 GPL version 2 or later，且 `MODULE_AUTHOR` 指向 AKM 的 Junichi Wakasugi。
+它不是 Ambarella 手写的几百行 boot init，而是完整的旧 ASoC codec driver：含 I²C/SPI、
+register cache、DAPM/controls、`hw_params`/`set_fmt`/mute/trigger、`ak7755-AIF1` DAI、
+PRAM/CRAM/OFREG/ACRAM firmware mode、RAM download、CRC16-CCITT 和读回命令 `0x72`。
+
+R1 同源关系通过以下独立指纹建立：
+
+1. Kasa driver 的 OF compatible、GPIO property、DAI 分别为 `akm,ak7755`、
+   `ak7755,pdn-gpio`、`ak7755-AIF1`，均与 R1 原厂 DT/启动日志一致。
+2. driver 以 mode `data2` 生成 `ak7755_pram_data2.bin`、`ak7755_cram_data2.bin`、
+   `ak7755_ofreg_data2.bin`，恰好是 R1 原厂 system 中的文件名。
+3. Kasa 定义的 PRAM/CRAM/OFREG write command 是 `0xB8/0xB4/0xB2`；R1 三个 data2
+   文件首字节也分别为 `b8/b4/b2`。
+4. 按源码的 CRC16-CCITT polynomial `0x1021`、初值 0 重算 R1 文件，结果为：
+
+```text
+9916  ak7755_pram_data2.bin
+4453  ak7755_cram_data2.bin
+96c1  ak7755_ofreg_data2.bin
+```
+
+其中 PRAM `0x9916` 和 CRAM `0x4453` 与原厂 `bringup_dmesg.md` 的 `Cal=... Read=...`
+逐字相同。结合原厂日志也使用内部函数名 `ak7755_firmware_write_ram` 和
+`ak7755_ram_download`，可将“Kasa AKM driver 是 R1 codec driver 的上游祖先”记为强推断；
+尚未找到的仍是 Rockchip `rockchip-ak7755` machine driver 和 R1 厂商在该参考驱动上的
+具体补丁。
+
+第二份 IPC-SDK 并不是新的完整 driver。它与此前 themactep/ingenic-sdk 固定版本的头文件
+SHA-256 完全相同；两个 C 文件的 unified diff 只有 5 个 hunk：reset GPIO、speaker GPIO、
+双声道 gain fallback、重复的 I²S transfer mode 初始化和 reset GPIO 请求条件。两者都是
+Ingenic OSS3 external-codec wrapper，没有 request_firmware、RAM download 或 CRC。因此
+“看起来手搓”对这份判断基本正确；它只是板级删减/修改版，价值低于 Kasa AKM ASoC source。
+
+Kasa source 同样不能不经审计直接复制。已确认至少存在这些问题：
+
+- 依赖 Linux 3.10 的 `snd_soc_codec`/`snd_soc_register_codec` API，需要移植到 5.10 component；
+- 全局 `ak7755_data` 使其只能安全支持单实例；
+- `request_firmware()` 成功后所有路径都没有 `release_firmware()`；若 size/kmalloc 失败也泄漏；
+- CRC mismatch 返回正数 `1`，而重试上层以 `ret >= 0` 提前退出并最终返回成功；
+- OFREG/ACRAM filename 分支误用 `ak7755_firmware_cram[cmd]`；
+- `ak7755_dsp_code.h` 没有独立许可头，且包含示例 DSP program，不纳入公开移植。
+
+下一步不再从原厂 zImage 盲猜完整协议。以 GPL Kasa `ak7755.c/.h` 和 AKM 数据手册为规范，
+先实现只支持 R1 I²C 的最小 Linux 5.10 component：regmap/gpiod、ID、reset、直接请求本地
+data2 PRAM/CRAM、严格 size/CRC/错误返回和资源释放。第一阶段不带 SPI、misc ioctl、内嵌
+DSP program、machine driver 或功放解除；功放继续保持 SDZ low + MUTE high。原厂 data2
+二进制没有公开再分发许可，仍只留在 `backup/`/本地 initramfs，不能提交公开仓库。
+
+## Linux 6.18 AK7755 安全 firmware verifier A3 主机构建（2026-08-12）
+
+用户决定将 canonical 移植目标从 Linux 5.10 改为 6.18，减少未来迁移到 Armbian/主线时的
+API 重写。对 5.10 与 6.18 的本地源码比较显示，本阶段使用的 component、firmware、gpiod、
+regulator 和 I²C transfer API 均仍存在；明显版本差异主要是 I²C driver 的 probe/remove
+回调签名。因此 A3 直接基于固定 Linux 6.18.42 实现，不额外维护一份 5.10 driver 副本。
+
+新增源码 overlay、binding、Kconfig/Kbuild patch、config fragment 和 A3 DTS。驱动只实现：
+
+- `0x60` repeated-start 读 ID，必须等于 `0x55`；
+- reset/PDN 的受控释放，且先取得 `safe-supply`，保持功放 shutdown+mute；
+- 只接受 data2 PRAM `0xB8` 与 CRAM `0xB4` 命令头，并限制文件大小；
+- 对完整 firmware 计算 CRC16-CCITT (`0x1021`, init 0)，再以 `0x72` 读取器件 CRC 严格比较；
+- 所有 firmware 引用均释放，错误路径重新断言 reset；
+- 注册没有 PCM DAI 的 ASoC component，I2S2 继续 disabled。
+
+第一次整核构建暴露了一个纯 Kbuild 错误：Makefile 目标写成
+`snd-soc-ak7755.o`，实际 overlay 文件名为 `ak7755.c`，所以单对象测试虽通过，整核构建报
+“没有规则可制作目标”。将目标修正为 `ak7755.o` 后重新构建成功；这说明新驱动验证不能
+只停在 `make sound/soc/codecs/ak7755.o`，必须至少完成一次整核链接。
+
+可复现构建命令为：
+
+```sh
+KERNEL_BUILD=build/kernel-6.18-ak7755-a3 \
+KERNEL_EXTRA_FRAGMENTS='kernel/config/r1-5.10-clean-4core.fragment kernel/config/r1-5.10-wifi-brcmfmac-a2.fragment kernel/config/r1-5.10-wifi-regulatory-a3.fragment kernel/config/r1-5.10-bt-rk805-clkout.fragment kernel/config/r1-5.10-bt-serdev-a1r6.fragment kernel/config/r1-5.10-bt-crypto-a1r9.fragment kernel/config/r1-6.18-ak7755-fw-a3.fragment' \
+BOARD_DTS=kernel/dts/rk3229-phicomm-r1-open-optee-ak7755-fw-a3.dts \
+KERNEL_ARTIFACT_TAG=mainline-6.18-ak7755-fw-a3 \
+scripts/build-kernel.sh
+
+R1_WIFI_FIRMWARE=1 R1_WIFI_REGULATORY=1 \
+R1_BLUETOOTH_FIRMWARE=1 \
+R1_WIFI_SCAN_TOOL=build/artifacts/r1-nl80211-scan \
+R1_BLUETOOTH_MGMT_TOOL=build/artifacts/r1-btmgmt \
+R1_AK7755_FIRMWARE=1 \
+INITRAMFS_ARTIFACT_TAG=mainline-6.18-ak7755-fw-a3 \
+scripts/build-initramfs.sh
+
+mkimage -f scripts/r1-linux-mainline-6.18-ak7755-fw-a3.its \
+  build/artifacts/r1-linux-mainline-6.18-ak7755-fw-a3.itb
+```
+
+最终 config 已核对 `SMP/ARM_PSCI/ARM_PSCI_FW`、brcmfmac SDIO、Bluetooth HCI UART BCM、
+AES/CMAC、I2C RK3X、ASoC、AK7755 和 firmware loader 均为 built-in。DTB 反编译确认
+I2C1 `audio-dsp@19` 具有 `akm,ak7755`、reset GPIO、safe supply 和两份 firmware 名称。
+initramfs 清单确认含 PRAM/CRAM、Wi-Fi/BT firmware 与 `r1-btmgmt`；没有加入会与内核 driver
+争用 `0x19` 的旧 `r1-ak7755-id` 工具。
+
+产物 SHA-256：
+
+```text
+85cc53fab64014c48bb617140ff5111605b0e9aefca3d78bf98a706cc31d7e57  kernel/overlays/linux-6.18.42/sound/soc/codecs/ak7755.c
+6f9a31ed181775338bf79b1b4231026b751ac031659c93a19b3a9c5e7f2c2ada  build/artifacts/kernel-mainline-6.18-ak7755-fw-a3.config
+63ee4975c90c244fce4b6cf44c1a9522cd1f03b5ed6444d042a01ff8b7e16c69  build/artifacts/zImage-mainline-6.18-ak7755-fw-a3
+34ace61e54e991a9fd259909accfd49af0abc1b128fa7bc068f7f62778c731c4  build/artifacts/r1-initramfs-mainline-6.18-ak7755-fw-a3.cpio.gz
+f3c76a6cc8a0abece8aa4f170075803d0d43975da8dcb788a08725814bda6b92  build/artifacts/rk3229-phicomm-r1-mainline-6.18-ak7755-fw-a3.dtb
+3b5a4d788f7f66ab57c5dfc62d554b89754594c5a8473be2aff82a63a8e4679f  build/artifacts/r1-linux-mainline-6.18-ak7755-fw-a3.itb
+```
+
+`dumpimage` 分别抽取三个 FIT component 后均与输入逐字节相同。主机工具在列出 FIT 时会先
+输出 `Truncated file`，但不影响 component 完整抽取、`cmp` 和内嵌 SHA-256；仍保留为主机
+工具提示，不把它误记为板端验证。当前主机缺 `dtschema` 的 `dt-doc-validate`，因此正式
+`dt_binding_check` 尚未执行。A3 仍只是主机候选；下一步必须 RAM-only 上板看到 ID `0x55`、
+PRAM CRC `0x9916`、CRAM CRC `0x4453`，并回归四核、uptime >30 s、Wi-Fi 和 Bluetooth。
+
+## Linux 6.18 AK7755 A3 RAM-only 实机验证通过（2026-08-12）
+
+用户从 eMMC 常驻 U-Boot 的 DFU RAM alternate 启动 A3，`uname -a` 返回：
+
+```text
+Linux (none) 6.18.42-phicomm-r1-4core-wifi-a3-dirty #1 SMP Wed Aug 12 12:27:25 CST 2026 armv7l GNU/Linux
+```
+
+AK7755 driver 的实机日志为：
+
+```text
+[    1.704956] ak7755 1-0019: PRAM firmware ak7755_pram_data2.bin: 5308 bytes, CRC 9916 verified
+[    1.827286] ak7755 1-0019: CRAM firmware ak7755_cram_data2.bin: 1113 bytes, CRC 4453 verified
+[    1.828617] ak7755 1-0019: AK7755EN ID 0x55; firmware verified, DSP intentionally stopped
+```
+
+这同时验证了 I2C1 `0x19`、reset/PDN、两次大块 I²C write、CRC enable/readback 和两份
+data2 firmware。CRC 与主机独立计算及原厂启动日志完全相同。该结论是 R1 实机事实；尚未
+验证的是 PCM DAI、I2S2 时钟/格式、machine card 和声音输出，因为 A3 有意不实现它们。
+
+无线和 SMP 回归结果：
+
+- `/bin/r1-wifi-scan` 返回 `scan_entries=28`，频点同时覆盖 2412–2462 MHz 与
+  5180–5825 MHz；BSSID 按工具设计隐藏。
+- `/bin/r1-btmgmt power on` 返回 `powered=on`；controller 仍为 BCM4345C0 build 0124。
+- LE 10 秒扫描返回 `scan_entries=20`，包含命名与匿名广播。
+- `/proc/interrupts` 显示 CPU0–CPU3 四列；四核 IPI2/IPI3 均有非零计数。
+- Bluetooth management 初始化时间戳为 31.867 秒，之后完整完成 10 秒 LE scan；因此即使
+  本次没有单独粘贴 `/proc/uptime`，串口时间线也直接证明运行时间超过约 41 秒，满足 >30 秒。
+
+日志另有三个 `rockchip-pm-domain ... sync_state() pending`，消费者分别为两个 video-codec
+节点和 RGA。它们发生在 12.645–12.647 秒，不阻止 init、无线、SMP 或 AK7755 验证；本阶段
+记录为未启用多媒体消费者导致的非阻塞提示，不将其误判为音频故障。
+
+A3 阶段完成。下一步 A4 保持 GPIO111 shutdown、GPIO113 mute，不写 eMMC，先注册 AK7755
+DAI、RK3229 I2S2 和最小 machine card。验收只到 ALSA card/PCM 枚举、DAI format 与 clock
+contract；在明确 MCLK/BCLK/LRCK 和通道映射前不解除功放、不播放音频。

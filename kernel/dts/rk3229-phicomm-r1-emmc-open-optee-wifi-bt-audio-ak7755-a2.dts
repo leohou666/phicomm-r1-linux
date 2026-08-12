@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+
+/*
+ * Phicomm R1 AK7755EN identity-read A2.
+ *
+ * Force the TPA3118D2 into both shutdown and mute before releasing the
+ * AK7755EN PDN line.  Supply dependencies make the regulator core defer the
+ * downstream GPIO until both amplifier-safe GPIO states are established.
+ * I2S and ASoC remain disabled.
+ */
+
+#include "rk3229-phicomm-r1-emmc-open-optee-wifi-bt-audio-i2c-a1.dts"
+
+/ {
+	amp_shutdown_safe: regulator-amp-shutdown-safe {
+		compatible = "regulator-fixed";
+		regulator-name = "amp_shutdown_safe";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&gpio3 RK_PB7 GPIO_ACTIVE_LOW>;
+		regulator-boot-on;
+		regulator-always-on;
+	};
+
+	amp_mute_safe: regulator-amp-mute-safe {
+		compatible = "regulator-fixed";
+		regulator-name = "amp_mute_safe";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&gpio3 RK_PC1 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+		regulator-always-on;
+		vin-supply = <&amp_shutdown_safe>;
+	};
+
+	ak7755_pdn: regulator-ak7755-pdn {
+		compatible = "regulator-fixed";
+		regulator-name = "ak7755_pdn";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&gpio1 RK_PA3 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+		regulator-always-on;
+		startup-delay-us = <2000>;
+		vin-supply = <&amp_mute_safe>;
+	};
+};
