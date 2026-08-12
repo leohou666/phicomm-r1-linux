@@ -513,10 +513,13 @@ static int ak7755_i2c_probe(struct i2c_client *client)
 	mutex_init(&ak7755->lock);
 	i2c_set_clientdata(client, ak7755);
 
-	ret = devm_regulator_get_enable(&client->dev, "safe");
-	if (ret)
+	ret = devm_regulator_get_enable_optional(&client->dev, "safe");
+	if (ret && ret != -ENODEV)
 		return dev_err_probe(&client->dev, ret,
 				     "failed to establish amplifier-safe state\n");
+	if (ret == -ENODEV)
+		dev_info(&client->dev,
+			 "amplifier safety is delegated to the machine driver\n");
 
 	ak7755->reset_gpio = devm_gpiod_get(&client->dev, "reset",
 					    GPIOD_OUT_HIGH);

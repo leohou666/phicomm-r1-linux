@@ -20,9 +20,9 @@ from desktop_notify import notify
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FIT = (
-    ROOT / "build/artifacts/r1-linux-mainline-6.18-ak7755-audio-soak-a7.itb"
+    ROOT / "build/artifacts/r1-linux-mainline-6.18-ak7755-audible-a8.itb"
 )
-DEFAULT_FIT_SHA256 = "571c8927c705dd87aab9d935a30d90ddbfc3e4b47e3ad6b7f2b945af5e7c719d"
+DEFAULT_FIT_SHA256 = "8fd60b34bbb2de433ff58bd3553ad7bad7a1f85b25b2be4dd47cee56eb98ac1b"
 
 
 def sha256(path: Path) -> str:

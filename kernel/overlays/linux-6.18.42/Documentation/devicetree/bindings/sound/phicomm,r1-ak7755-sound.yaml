@@ -12,8 +12,9 @@ maintainers:
 description: |
   Minimal machine link between the RK3229 I2S2 controller and the AK7755 on
   the Phicomm R1. The CPU provides BCLK and LRCK. The first implementation is
-  deliberately restricted to 48 kHz, stereo, 16-bit PCM and does not control
-  the external amplifier.
+  deliberately restricted to 48 kHz, stereo and 16-bit PCM. Optional
+  amplifier supplies expose a fail-closed, test-only gate; both supplies are
+  disabled by default.
 
 properties:
   compatible:
@@ -24,6 +25,14 @@ properties:
 
   phicomm,audio-codec:
     $ref: /schemas/types.yaml#/definitions/phandle
+
+  amp-enable-supply:
+    description: |
+      Enables the amplifier while leaving its separate mute input asserted.
+
+  amp-unmute-supply:
+    description: |
+      Deasserts amplifier mute. This may only be enabled after amp-enable.
 
 required:
   - compatible

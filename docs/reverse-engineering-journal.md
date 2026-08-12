@@ -5674,3 +5674,128 @@ full-duplex 生命周期、PL330 DMA、DSP RUN/STANDBY、四核、无线共存�
 RMS 为 0。该统计证明数据不是全零且 capture DMA 在前进，却没有证明真实麦克风信号进入；
 它很可能只是固定量化偏置/数字底噪。下一步先扩展只统计、不保存样本的 capture 工具，增加
 DC 均值、min/max、变化次数，并做静音与近场声音 A/B；继续保持功放 shutdown+mute。
+
+## 2026-08-12：Audio A8 保守实际外放主机候选
+
+### 授权、目标与安全设计
+
+用户在询问直接外放风险后，明确要求做一次保守的实际验证。A8 的目标只回答“R1 的既有
+data2 program 是否把 Linux I2S playback 送到 DAC/TPA3118D2/扬声器”，不开放音量、频率、
+时长或任意 PCM。真实声音只能由固定 `/bin/r1-audible-test` 触发。
+
+DT 将原 A4/A7 中始终占用 GPIO3_B7/GPIO3_C1 的 always-on 安全 regulator 替换为两个默认
+disabled gate。disabled 的电气状态仍为 SDZ physical low、MUTE physical high；最终 DTB
+反编译确认 enable gate 是 active-high，unmute gate 是 active-low。AK7755 codec 的旧
+`safe-supply` dependency 被移除，两个 gate 只交给 machine driver。
+
+machine driver 新增 mode `0600` 的 `/dev/r1-audio-safety`，并要求 `CAP_SYS_RAWIO` 与 exclusive
+open。ARM_MUTED 先保证 mute+shutdown，再只释放 SDZ并等待 20 ms；unmute 后看门狗缩短到
+500 ms，工具每个约 21 ms PCM period 续期。正常 SAFE、file release、进程被杀、timeout、
+driver remove 和 shutdown 都按 MUTE → 10 ms → SDZ low 回退。mute 操作失败也不会跳过
+shutdown 尝试。
+
+freestanding ARM 工具固定 48 kHz/stereo/S16_LE、1 kHz、peak 32/32767（约 -60.2 dBFS）、
+100 ms 淡入/淡出、总长 1 秒。它先在 mute 状态送 8 个全零 period，再 unmute、按 period
+续期并发送短音，最后送 4 个全零 period 后立即 SAFE。所有错误路径也请求 SAFE，内核
+close/timeout 是独立的第二道保护。无声仍可能表示 data2 routing 没有把 I2S input 接到 DAC，
+不能直接判定功放或扬声器损坏。
+
+### 构建过程与遇到的问题
+
+首先构建静态工具：
+
+```sh
+scripts/build-r1-audible-test.sh
+```
+
+首轮链接暴露两个工具实现错误：局部字符串初始化让 freestanding ELF 引入未提供的 `memcpy`，
+`frame % 48` 又引入 `__aeabi_uidivmod`。补入最小 `memcpy` 并用 0..47 phase 递增替代运行时除法
+后，ELF 成功静态链接，GNU_STACK 为 `RW`，符号表没有运行时 UND。
+
+旧 `build/kernel-src` 已有上一轮 patch，重复执行 source prepare 会在 `arch/arm/Kconfig.debug`
+冲突。因此保留旧树不清理，另建固定 v6.18.42 source：
+
+```sh
+KERNEL_SRC=build/kernel-src-a8 scripts/prepare-kernel-source.sh
+```
+
+首轮内核编译发现 Linux 6.18 已无 `no_llseek`，改为 `noop_llseek`。随后一次增量重试在前一
+并行 make 尚未完全退出时误复用了同一 output directory，出现互相删除 `.o/.d` 的假故障；
+它不是源码问题。保留现场并换全新 output directory 后完整构建通过：
+
+```sh
+KERNEL_SRC=build/kernel-src-a8 \
+KERNEL_BUILD=build/kernel-6.18-ak7755-audible-a8-clean \
+KERNEL_EXTRA_FRAGMENTS='kernel/config/r1-5.10-clean-4core.fragment kernel/config/r1-5.10-wifi-brcmfmac-a2.fragment kernel/config/r1-5.10-wifi-regulatory-a3.fragment kernel/config/r1-5.10-bt-rk805-clkout.fragment kernel/config/r1-5.10-bt-serdev-a1r6.fragment kernel/config/r1-5.10-bt-crypto-a1r9.fragment kernel/config/r1-6.18-ak7755-fw-a3.fragment kernel/config/r1-6.18-ak7755-dai-a4.fragment kernel/config/r1-6.18-ak7755-dsp-run-a6.fragment kernel/config/r1-6.18-ak7755-audio-soak-a7.fragment kernel/config/r1-6.18-ak7755-audible-a8.fragment' \
+BOARD_DTS=kernel/dts/rk3229-phicomm-r1-open-optee-ak7755-audible-a8.dts \
+KERNEL_ARTIFACT_TAG=mainline-6.18-ak7755-audible-a8 \
+scripts/build-kernel.sh
+
+R1_WIFI_FIRMWARE=1 R1_WIFI_REGULATORY=1 R1_BLUETOOTH_FIRMWARE=1 \
+R1_WIFI_SCAN_TOOL=build/artifacts/r1-nl80211-scan \
+R1_BLUETOOTH_MGMT_TOOL=build/artifacts/r1-btmgmt R1_AK7755_FIRMWARE=1 \
+R1_PCM_CLOCK_TEST_TOOL=build/artifacts/r1-pcm-clock-test \
+R1_PCM_CAPTURE_TEST_TOOL=build/artifacts/r1-pcm-capture-test \
+R1_AUDIO_SOAK_TOOL=initramfs/r1-audio-soak \
+R1_AUDIBLE_TEST_TOOL=build/artifacts/r1-audible-test \
+INITRAMFS_ARTIFACT_TAG=mainline-6.18-ak7755-audible-a8 \
+scripts/build-initramfs.sh
+
+mkimage -f scripts/r1-linux-mainline-6.18-ak7755-audible-a8.its \
+  build/artifacts/r1-linux-mainline-6.18-ak7755-audible-a8.itb
+```
+
+### 主机验证与结论
+
+完整 multi_v7 zImage 链接和 A8 DT 编译通过。最终 config localversion 为
+`-phicomm-r1-ak7755-audible-a8`，AK7755 codec 与 R1 machine driver 均 built-in。initramfs
+清单同时含 audible、A7 soak、playback/capture、Wi-Fi 和 Bluetooth 工具。FIT 为 13.7 MiB，
+低于 DFU 16 MiB window；三个 component 用 `dumpimage` 抽出后都与输入 `cmp` 一致。
+`checkpatch.pl --strict` 对两份 audio driver 得到 0 errors、0 warnings、6 个既有 alignment
+CHECK。产物 SHA-256：
+
+```text
+9e828a366d46e316a095525798ff0a226c2cb27a03fb9e026b972a64aca1891e  kernel-mainline-6.18-ak7755-audible-a8.config
+bf0b72a0ac4b1c1dfa39580b328a87d8676f36edebb39b383508630425825dfc  zImage-mainline-6.18-ak7755-audible-a8
+0c7ae9c997fa228d1d5e4ef4a644f5f18f44eee8d380a2c1dad676f8b5c25d4e  rk3229-phicomm-r1-mainline-6.18-ak7755-audible-a8.dtb
+191e3ecf9f2d0f990ccf7ddfeb0c5d23c9468cb3fec185dedecdeabf1fec4e28  r1-initramfs-mainline-6.18-ak7755-audible-a8.cpio.gz
+2140038092475f22eb134d11a9c28e26114f12a494ebd6252d97f25edb0abc1b  r1-audible-test
+8fd60b34bbb2de433ff58bd3553ad7bad7a1f85b25b2be4dd47cee56eb98ac1b  r1-linux-mainline-6.18-ak7755-audible-a8.itb
+```
+
+当前结论仅为主机候选就绪。默认 DFU 脚本已更新并锁定上述 FIT/hash；尚未运行 R1 实机，
+所以不能声称扬声器已出声或无爆音。下一步只允许 RAM-only 启动 A8，先观察默认 SDZ low/
+MUTE high 与 `/dev/r1-audio-safety`，再在前台运行一次 `/bin/r1-audible-test`，记录听感、退出码、
+DSP RUN/STANDBY 和最终 GPIO。未通过前不执行普通音频文件、扫频或更高幅度测试。
+
+### Audio A8 RAM-only 实机通过
+
+用户从上述已锁定 hash 的 A8 FIT 启动后，在前台运行固定工具：
+
+```sh
+/bin/r1-audible-test
+echo "audible_rc=$?"
+/bin/busybox grep -Ei 'amp|shutdown|mute|unmute|output' /sys/kernel/debug/gpio
+/bin/busybox dmesg | /bin/busybox grep -Ei \
+  'audible test|keepalive|DSP RUN|DSP STANDBY|xrun|underrun|error|fail'
+```
+
+用户报告听到“一段很小声”的短音，`audible_rc=0`。保留的 dmesg 实际包含两次完整测试，
+两次均按同一顺序执行：safe → armed（功放 enable、仍 mute）→ DSP RUN → UNMUTED → safe →
+DSP STANDBY。第一次 UNMUTED 在 57.770859 秒，58.878812 秒即回到 safe；第二次分别为
+67.190468 秒与 68.298810 秒。没有看到 xrun、underrun 或 keepalive timeout。
+
+最终 GPIO 证据为：
+
+```text
+gpio-29  (                    |shutdown            ) out hi
+gpio-15  (                    |regulator-amp-output) out lo
+gpio-17  (                    |regulator-amp-output) out hi ACTIVE LOW
+```
+
+结合 A8 DT 极性，GPIO3_B7 low 表示 TPA3118D2 SDZ/shutdown 已断言，GPIO3_C1 high 表示 MUTE
+已断言。这里已经实机验证从 Linux PCM/I2S2/PL330 DMA，经 AK7755 data2 DSP 和功放到扬声器的
+受控真实出声闭环，也验证了正常结束后的 fail-closed 收口。用户未单独描述有无轻微 pop，故
+该项仍是开放问题；本次结果也不证明左右声道、频响、失真、声压或高音量安全。下一阶段先把
+A8 作为已知良好基线提交，再单独选择低风险的渐进音量/声道验证或 capture 静音/近场声音 A/B，
+不直接开放任意音频文件和长时间 unmute。

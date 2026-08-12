@@ -241,8 +241,20 @@ BusyBox `timeout` 兼容性错误，所有子工具均未启动；A7r2 已改用
 31、1、18 个扫描项，CPU0-3 与四核 IPI 正常，uptime 到 65.32 秒，功放前后保持
 shutdown+mute，最终输出 `AUDIO_SOAK_PASS`。capture 两路虽然每帧均非零，但 peak 只有 1 LSB、
 近似 RMS 为 0；这只证明 capture PCM/DMA 数据链活动，更像固定量化偏置或数字底噪，不能
-声称麦克风、ADC 或 DSP routing 已正确。下一步应在功放继续关闭时辨别 capture routing 与
-真实输入响应，仍不播放非零 PCM。
+声称麦克风、ADC 或 DSP routing 已正确。用户随后授权一次保守实际外放验证；Audio A8
+现已完成主机构建和 RAM-only 实机验证。A8 把功放 SDZ/MUTE 从 always-on 安全 regulator 改为默认禁用的两个
+独立 gate，仅由 root-only、exclusive 的内核 misc device 控制；进程关闭、被杀、驱动
+shutdown 或 keepalive 超时都会先 mute、等待 10 ms，再 shutdown。测试工具不接受参数，
+固定输出 1 kHz stereo、约 -60 dBFS、100 ms 淡入淡出、1 秒，并在 unmute 后每个 PCM period
+续期 500 ms 看门狗。13.7 MiB FIT 已完成整核构建、静态 DT/ELF 审计和三个 payload 的解包
+逐字节核对；默认 DFU 脚本已锁定 SHA-256
+`8fd60b34bbb2de433ff58bd3553ad7bad7a1f85b25b2be4dd47cee56eb98ac1b`。实机前台运行后，用户
+明确听到一段很小声的短音，退出码为 0；内核日志中两次测试都完成 DSP RUN、UNMUTED、safe
+和 DSP STANDBY，最终 GPIO 为 SDZ physical low、MUTE physical high。这已验证 Linux
+I2S/DMA→AK7755 data2 DSP→功放→扬声器的受控真实播放闭环，以及正常退出后的 fail-closed
+收口。用户尚未单独描述是否存在轻微 pop，因此该听感项保留为开放问题；当前仍不开放任意
+PCM、任意音量或长时 unmute。下一步先冻结并提交 A8 基线，再设计带硬上限的渐进音量/声道
+验证，或回到麦克风 capture 静音/近场声音 A/B。
 原厂 data2 二进制没有公开再分发许可，仍只留在 `backup/` 和本地生成的 initramfs，不能
 提交公开仓库。
 
@@ -451,6 +463,7 @@ secure INTID55/APR0 的完整定位和 clean kernel 验证。下一实机步骤�
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-pcm-clock-a5.itb` | 已实机通过 Audio A5：复用 A4 kernel/DTB，只在 initramfs 加入全零 PCM clock/DMA 工具；30 秒 48 kHz/stereo/S16 零流 `xruns=0`，运行态时钟和 PL330 DMA IRQ 已验证，结束后时钟回落且功放保持 shutdown+mute。14,340,996 B，SHA-256 `bb59d10590d9c61add007a34c55c275766d8ea199df80759df4aea79305771f1`；禁止非零 PCM。 |
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-dsp-run-a6.itb` | 已实机通过 Audio A6：PCM prepare/last-close 驱动 AK7755 RUN/STANDBY；10 秒全零流读回 `C1=0x21`、CF `0x0c→0x00`，`xruns=0`，功放前后保持 shutdown+mute。14,345,092 B，SHA-256 `bf7ff93e05c5c36407b04ebdf4dfcb16a32c86ca00cbfd348f4d5638721733de`；尚未验证算法 routing 或声音输出。 |
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-audio-soak-a7.itb` | 已实机通过 Audio A7r2：60 秒并发零 playback/capture 均无 xrun，DMA IRQ `+5622`、DSP RUN/STANDBY 成对、四核与 Wi-Fi/BR-EDR/LE 共存、功放前后安全，最终 `AUDIO_SOAK_PASS`。capture 仅见两路 peak=1 LSB，尚未证明麦克风/routing。14,348,252 B，SHA-256 `571c8927c705dd87aab9d935a30d90ddbfc3e4b47e3ad6b7f2b945af5e7c719d`。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-audible-a8.itb` | 已实机通过 Audio A8：root-only/exclusive/timeout-backed 功放安全门；固定 1 kHz、约 -60 dBFS、100 ms 淡入淡出、1 秒实际外放。用户听到很小声的短音，退出码 0，DSP RUN/STANDBY 成对且最终 SDZ low/MUTE high；进程关闭、被杀或 500 ms keepalive 超时仍由内核先 mute 后 shutdown。13.7 MiB，SHA-256 `8fd60b34bbb2de433ff58bd3553ad7bad7a1f85b25b2be4dd47cee56eb98ac1b`。 |
 
 ## 安全边界
 

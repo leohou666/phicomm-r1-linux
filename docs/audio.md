@@ -406,6 +406,61 @@ capture 的原始样本按设计未保存。统计为左右声道各 2,880,000 �
 用受控近场声音/静音 A/B 和更精细的直流均值/极值/变化计数统计定位 capture 输入，不需要也
 不允许先解除扬声器功放。
 
+### Audio A8：保守实际外放实机通过
+
+用户明确授权一次保守的真实扬声器验证。A8 不是开放通用 ALSA 播放，而是把真实出声窗口
+限制在一个固定程序、一个独占内核安全门和一个短看门狗内。DT 删除 A4 的两个 always-on
+安全 regulator，改为两个默认 disabled 的 fixed regulator：GPIO3_B7 的 `amp_output_enable`
+禁用时为 physical low（TPA3118D2 SDZ/shutdown），GPIO3_C1 的 `amp_output_unmute` 禁用时为
+physical high（MUTE）。最终 DTB 反编译确认两者分别为 active-high 与 active-low，machine
+driver 是唯一 consumer。
+
+`/dev/r1-audio-safety` 权限为 `0600`，还要求 `CAP_SYS_RAWIO`，并且只允许一个打开者。安全
+状态机先开启 SDZ 但保持 MUTE，等待 20 ms 后才允许 unmute；回退顺序永远先 MUTE，等待
+10 ms，再拉低 SDZ。ARM_MUTED 阶段最多 3 秒，unmute 后必须每 500 ms 内续期；文件关闭、
+进程被杀、keepalive 超时、driver remove 或 system shutdown 都执行同一回退。即使 mute
+regulator disable 报错，driver 仍继续尝试 shutdown，而不是停在可能出声状态。
+
+`r1-audible-test` 是无 libc 的静态 ARM ELF，不接受幅度、频率或时长参数。它固定协商
+48 kHz/stereo/S16_LE，先在 mute 状态预送 8 个全零 period，再短暂解除 MUTE；有效信号为
+1 kHz、峰值 32/32767（约 -60.2 dBFS）、100 ms 阶梯淡入、100 ms 淡出、总长 1 秒。每个
+PCM period 前续期内核看门狗，之后再送 4 个全零 period 并立即回到安全态。所有 ioctl、PCM
+write、xrun 或退出路径都先请求 SAFE；若用户 Ctrl+C 或进程异常退出，内核 release/timeout
+仍独立收口。这个测试可能因为 data2 DSP routing 未把 I2S 输入送到 DAC 而完全无声；无声
+不能直接归因于功放或扬声器损坏。
+
+主机侧已经完成 Linux 6.18.42 整核链接、DT 编译、ELF 静态/noexecstack/无运行时 UND 审计、
+initramfs 清单检查，以及 FIT 三个 payload 的 `dumpimage` 抽取后逐字节比较。A8 FIT 为
+13.7 MiB，低于 16 MiB DFU RAM alternate。SHA-256：
+
+```text
+9e828a366d46e316a095525798ff0a226c2cb27a03fb9e026b972a64aca1891e  kernel-mainline-6.18-ak7755-audible-a8.config
+bf0b72a0ac4b1c1dfa39580b328a87d8676f36edebb39b383508630425825dfc  zImage-mainline-6.18-ak7755-audible-a8
+0c7ae9c997fa228d1d5e4ef4a644f5f18f44eee8d380a2c1dad676f8b5c25d4e  rk3229-phicomm-r1-mainline-6.18-ak7755-audible-a8.dtb
+191e3ecf9f2d0f990ccf7ddfeb0c5d23c9468cb3fec185dedecdeabf1fec4e28  r1-initramfs-mainline-6.18-ak7755-audible-a8.cpio.gz
+2140038092475f22eb134d11a9c28e26114f12a494ebd6252d97f25edb0abc1b  r1-audible-test
+8fd60b34bbb2de433ff58bd3553ad7bad7a1f85b25b2be4dd47cee56eb98ac1b  r1-linux-mainline-6.18-ak7755-audible-a8.itb
+```
+
+RAM-only 实机随后完成验证。用户明确报告听到“一段很小声”的短音，工具退出码为 0。串口
+保留了两次完整触发序列：每次均先进入 safe，再 armed、DSP RUN、UNMUTED，约 1.1 秒后回到
+safe，最后得到 DSP STANDBY；未出现 xrun/underrun。关键日志为：
+
+```text
+phicomm-r1-ak7755 sound: audible test armed: amplifier enabled but muted
+ak7755 1-0019: DSP RUN armed: C1=0x21 CF=0xc; amplifier controls unchanged
+phicomm-r1-ak7755 sound: audible test UNMUTED; 500 ms fail-safe active
+phicomm-r1-ak7755 sound: audible test safe: mute+shutdown asserted
+ak7755 1-0019: DSP STANDBY verified: C1=0x21 CF=0x0; amplifier controls unchanged
+```
+
+测试后 debugfs 显示 GPIO3_B7/`regulator-amp-output` 为 physical low，GPIO3_C1 对应 active-low
+unmute gate 为 physical high，即 TPA3118D2 已重新 shutdown+mute。由此可验证的范围是：Linux
+ALSA/I2S2/PL330 DMA、AK7755 data2 DSP routing、功放控制和扬声器至少存在一条实际可出声路径，
+并且正常完成后的硬件状态安全收口。用户没有单独说明是否听到轻微 pop，因此不能把“无 pop”
+写成已验证事实；也尚未验证左右声道、频响、失真、实际声压或较高音量。A8 固定工具继续保留，
+不因此开放任意 PCM、任意幅度或长时间解除 MUTE。
+
 ## 3. PipeWire DSP
 
 建议创建一个虚拟输出节点：

@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: (GPL-2.0-or-later OR MIT)
+
+/*
+ * Phicomm R1 conservative audible-output A8.
+ *
+ * Both fixed regulators default to their disabled state: SDZ physical low
+ * and MUTE physical high.  The machine driver is their only consumer and
+ * exposes a root-only, exclusive, timeout-backed test gate.
+ */
+
+#include "rk3229-phicomm-r1-open-optee-ak7755-dai-a4.dts"
+
+/ {
+	/delete-node/ regulator-amp-shutdown-safe;
+	/delete-node/ regulator-amp-mute-safe;
+
+	amp_output_enable: regulator-amp-output-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "amp_output_enable";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&gpio3 RK_PB7 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	amp_output_unmute: regulator-amp-output-unmute {
+		compatible = "regulator-fixed";
+		regulator-name = "amp_output_unmute";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&gpio3 RK_PC1 GPIO_ACTIVE_LOW>;
+	};
+};
+
+&ak7755 {
+	/delete-property/ safe-supply;
+};
+
+&{/sound} {
+	amp-enable-supply = <&amp_output_enable>;
+	amp-unmute-supply = <&amp_output_unmute>;
+};

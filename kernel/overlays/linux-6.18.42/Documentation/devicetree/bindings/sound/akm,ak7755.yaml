@@ -30,7 +30,10 @@ properties:
     maxItems: 1
 
   safe-supply:
-    description: Board-level prerequisite that keeps downstream amplifiers safe.
+    description: |
+      Optional board-level prerequisite that keeps downstream amplifiers safe.
+      Boards whose machine driver exclusively owns a fail-closed amplifier
+      gate may omit this supply.
 
   akm,pram-firmware:
     description: PRAM image including its AK7755 RAM-write command header.
@@ -46,7 +49,6 @@ required:
   - compatible
   - reg
   - reset-gpios
-  - safe-supply
 
 additionalProperties: false
 

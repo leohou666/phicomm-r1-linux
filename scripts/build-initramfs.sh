@@ -15,6 +15,7 @@ ak7755_id_tool=${R1_AK7755_ID_TOOL:-}
 pcm_clock_test_tool=${R1_PCM_CLOCK_TEST_TOOL:-}
 pcm_capture_test_tool=${R1_PCM_CAPTURE_TEST_TOOL:-}
 audio_soak_tool=${R1_AUDIO_SOAK_TOOL:-}
+audible_test_tool=${R1_AUDIBLE_TEST_TOOL:-}
 include_ak7755_firmware=${R1_AK7755_FIRMWARE:-0}
 artifact_tag=${INITRAMFS_ARTIFACT_TAG:-}
 artifacts="$project_root/build/artifacts"
@@ -196,6 +197,21 @@ if [ -n "$audio_soak_tool" ]; then
 		exit 1
 	}
 	install -m 0755 "$audio_soak_tool" "$rootfs/bin/r1-audio-soak"
+fi
+
+if [ -n "$audible_test_tool" ]; then
+	[ -x "$audible_test_tool" ] || {
+		printf 'Audible test tool is missing or not executable: %s\n' \
+			"$audible_test_tool" >&2
+		exit 1
+	}
+	if ! file "$audible_test_tool" | grep -q \
+		'ELF 32-bit.*ARM.*statically linked'; then
+		printf 'Audible test tool must be a static 32-bit ARM ELF: %s\n' \
+			"$audible_test_tool" >&2
+		exit 1
+	fi
+	install -m 0755 "$audible_test_tool" "$rootfs/bin/r1-audible-test"
 fi
 
 if [ "$include_ak7755_firmware" = 1 ]; then
