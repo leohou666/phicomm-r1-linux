@@ -1,0 +1,32 @@
+From 4c9894b990b873172ab1441f0bca33a37f2a2f44 Mon Sep 17 00:00:00 2001
+From: Phicomm R1 bring-up <r1-bringup@localhost>
+Date: Thu, 13 Aug 2026 12:00:00 +0800
+Subject: [PATCH] bluez: export A2DP endpoints before registering app
+
+BlueZ handles Media1.RegisterApplication asynchronously by immediately
+querying the application's ObjectManager.  BlueALSA 4.3.1 sends that call
+before exporting its endpoint objects, which can leave BlueZ waiting for the
+ObjectManager transaction while BlueALSA eventually reports a D-Bus timeout.
+
+Create the ObjectManager, export every configured A2DP endpoint, and only then
+send RegisterApplication.  This is the ordering used by current upstream
+BlueALSA in bluez_adapter_register_media_application().
+
+Upstream-reference: 894ebe68f69984ebd5d89def72cd0283a870c09b
+Signed-off-by: Phicomm R1 bring-up <r1-bringup@localhost>
+---
+ src/bluez.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/bluez.c b/src/bluez.c
+index b0d7cf7..cb9369f 100644
+--- a/src/bluez.c
++++ b/src/bluez.c
+@@ -145,0 +146,3 @@
++	/* BlueZ must see the endpoints in its first ObjectManager snapshot. */
++	bluez_register_a2dp_all(a);
++
+@@ -246 +248,0 @@
+-		bluez_register_a2dp_all(a);
+--
+2.51.0

@@ -449,8 +449,10 @@ Audio A24 首次上板确认普通 playback 确实拉起 factory DSP 与功放�
 生成 ARMv7 hard-float/musl rootfs，固定 Linux 6.18 headers、BlueZ 5.79、BlueALSA 4.3.1 与 SBC，
 服务顺序为 D-Bus → bluetoothd → bluealsa A2DP Sink → bluealsa-aplay。专有 Wi-Fi/BT/AK7755
 固件不进入仓库，只能经 SHA-256 白名单 manifest 注入。A25r2 FIT 已在主机解包逐字节比对；
-10 秒 zero-PCM 实机回归已确认 STOP 修复，不再出现 atomic-sleep/softirq 警告。配对、真实 A2DP
-播放和异常收口尚未验证，不能提前称为可用蓝牙音频系统。
+10 秒 zero-PCM 实机回归已确认 STOP 修复，不再出现 atomic-sleep/softirq 警告。A25r2 配对时
+BlueZ 虽已看到 SBC endpoint，BlueALSA 4.3.1 的 media application 注册仍超时，连接继而断开。
+A25r3 已最小回移上游 endpoint-first 注册顺序并完成主机构建/FIT 审计，尚待实机确认；真实播放
+和异常收口未通过前，不能称为可用蓝牙音频系统。
 
 ## 已完成阶段
 
@@ -507,7 +509,7 @@ Audio A24 首次上板确认普通 playback 确实拉起 factory DSP 与功放�
 11. clean 四核 v9 已用修正后的 INTID55 cleanup SPL 实机通过。白名单救援 v11 的最小-DT A 线四核正常，完整 eMMC DT 的 B1/B2 都只读枚举成功但 CPU1–CPU3 未 online；B2 已否定 arch-timer，C2 又否定 Cortex-A7 814220 单变量。C1 用同一完整 B2 DT/initramfs 换回 multi_v7 v9 后四核与 eMMC 同时通过，现作为外设工作基线；B3 CRU A/B 延后到最小化阶段。
 12. 已从 C1 构建 USB Host A1，但用户确认成品没有可用 USB 外设口，该支线已降级为 SoC/DFU 研究产物；板载 SDIO Wi-Fi、UART Bluetooth（含 BCM4345C0 HCD build 0124、AES/CMAC）均已实机通过。
 13. eMMC A5 常驻开源启动链已经写后读回并冷启动通过；Linux 仍只经 U-Boot DFU 装入 RAM。Linux 6.18.42 Audio A7r2 已把 playback/capture、无线、DMA、DSP、四核和功放安全检查收敛成单命令并实机通过 60 秒共存验证；capture 目前仅见 1-LSB 级活动，真实麦克风/routing 仍待 A/B。不写 eMMC、不解除功放、不播放非零音频。
-14. A23 原厂 DSP 路由已由用户确认低底噪并完成回归。A24/A25 首次 RAM-only 上板确认自动功放和用户态服务链启动，但暴露 PL330 tasklet STOP 中睡眠的内核 BUG；A24r2/A25r2 已改成 IRQ-safe trigger + high-priority worker，10 秒 zero-PCM 实机返回 0，RUN→SAFE→STANDBY 完整且 atomic-sleep/softirq/xrun 均未复现。下一步进行配对和 SBC A2DP Sink 真实播放，暂不写 eMMC rootfs。
+14. A23 原厂 DSP 路由已由用户确认低底噪并完成回归。A24r2/A25r2 已解决 PL330 tasklet STOP 中睡眠并通过 zero-PCM；随后实机把首个 A2DP 卡点定位为 BlueALSA 4.3.1 在 endpoint 导出前注册 application 导致超时。A25r3 已最小回移上游 endpoint-first 顺序并完成主机审计，下一步 RAM-only 重测配对和 SBC 播放，暂不写 eMMC rootfs。
 
 ## 文档导航
 
@@ -624,9 +626,10 @@ Audio A24 首次上板确认普通 playback 确实拉起 factory DSP 与功放�
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-i2s-clock-a19.itb` | Audio A19 RAM-only I2S clock A/B：逐字节复用 A18r3 kernel/DTB，仅新增 `/bin/r1-i2s-clock-ab`；比较 zero PCM running、PCM DROP 后 clocks stopped、PREPARE 后 running，功放/codec route 与 fail-safe 保持。14,364,660 B，SHA-256 `1bba7b088f3d6ba40c1bce737ead66266786facd4489e513a19c6565f72b7c54`；FIT payload 与工具已逐字节核验，默认 DFU 已切换。 |
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-auto-amp-a24.itb` | A24 失败证据：普通 playback 确实控制 PA，但 PL330 tasklet drain STOP 调用可睡眠的旧 trigger，实机触发 `scheduling while atomic`；不得继续用于播放。 |
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-auto-amp-a24r2.itb` | A24r2 救援候选：IRQ-safe trigger + high-priority PA worker，STOP 可取消 settle 并禁止晚到 unmute；14,351,236 B，SHA-256 `fdd0a96307a81c14d93b523b9b1060296ceba2855f3fb358ce4cbc4afed7ec2c`；三个 payload 已逐字节核验，待实机。 |
-| `build/buildroot-r1-bluealsa-6.18/images/rootfs.cpio.gz` | Buildroot 2026.05.1 ARMv7 hard-float/musl 用户态：Linux 6.18.34 headers、D-Bus、BlueZ 5.79、BlueALSA 4.3.1、SBC 与 ALSA；6,956,537 B，SHA-256 `f78f5d12eac1c4524e4deb49b1ab280227415a9034e8be0681f6a48a2b0c7315`；专有固件仅由本地 SHA manifest 注入。 |
+| `build/buildroot-r1-bluealsa-6.18/images/rootfs.cpio.gz` | A25r3 Buildroot 2026.05.1 ARMv7 hard-float/musl 用户态：BlueZ 5.79、BlueALSA 4.3.1 + endpoint-first 注册补丁、SBC 与 ALSA；6,957,094 B，SHA-256 `32e28c812ac57eb242a182cb39c3d1e686c37c03a8a8b386687352405af876dc`；专有固件仅由本地 SHA manifest 注入。 |
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-bluealsa-a25.itb` | A25 失败证据：用户态服务均存活，但沿用 A24 内核并在 zero-PCM STOP 时触发 atomic-sleep BUG；不得继续用于播放。 |
-| `build/artifacts/r1-linux-mainline-6.18-ak7755-bluealsa-a25r2.itb` | A25r2 RAM-only 当前候选：A24r2 kernel/DTB + 原已审计 Buildroot BlueALSA rootfs，三个 payload 已抽取逐字节比较；20,281,340 B，SHA-256 `92539648aaed0fc136221960750b5c9432a3f094f5e8ea4da0fcf3b574aadf55`；10 秒 zero-PCM 已实机通过且旧 atomic-sleep BUG 未复现，下一步验证真实 A2DP。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-bluealsa-a25r2.itb` | A25r2 失败证据：zero-PCM 与自动 PA 已通过，但 A2DP endpoint 出现后 BlueALSA `RegisterApplication` 超时、连接断开；不再作为当前候选。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-bluealsa-a25r3.itb` | A25r3 RAM-only 候选：最小回移上游 endpoint-first 注册顺序；固件、ARM ELF、三个 FIT payload 和 64 MiB 上限均已主机核验。20,281,892 B，SHA-256 `577895a748668127bfc61b6c479127fa27810c26e7777a76c8b40b34e5527c95`；尚待实机。 |
 
 ## 安全边界
 

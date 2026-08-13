@@ -1122,6 +1122,25 @@ A25r2 FIT 为 20,281,340 B，超过旧 16 MiB DFU alternate，因此只扩大 RA
 运行配对 agent 和 SBC A2DP Sink；真实播放、暂停、断连、播放器崩溃、重连和无线共存通过前，
 不把 rootfs 写入 eMMC。
 
+首次 A25r2 配对没有打通 A2DP。实机 `bluetoothd` 已打印两个 SBC Sink endpoint registered，
+但 BlueALSA 同时以 `Couldn't register media application: Timeout was reached` 退出；更早一次连接
+还记录了 endpoint `NoReply`，随后手机以 reason 2 断开。普通 ALSA 和内核 HCI 均已独立通过，
+因此这是用户态 D-Bus 注册边界的直接证据，不是扬声器无声或 PA 状态机失败。
+
+源码审计发现 BlueALSA 4.3.1 在导出 endpoint object 之前就发送 BlueZ
+`Media1.RegisterApplication`。BlueALSA maintainer Arkadiusz Bokowy 于 2026-01-27 的上游提交
+[`894ebe68`](https://github.com/arkq/bluez-alsa/commit/894ebe68f69984ebd5d89def72cd0283a870c09b)
+采用先导出全部 A2DP endpoint、再注册 media application 的顺序。A25r3 只回移这项顺序，不整体
+升级 BlueALSA；Buildroot 通过 `BR2_GLOBAL_PATCH_DIR` 应用补丁。`-j16` 增量构建、固件白名单、
+ARM hard-float ELF 和 FIT payload 检查均通过。该因果关系目前是由日志和源码支持的推断，A25r3
+仍需实机确认 `RegisterApplication` 不再超时后才能视作修复。默认 DFU 下载器已 hash-pinned 到
+A25r3。
+
+```text
+32e28c812ac57eb242a182cb39c3d1e686c37c03a8a8b386687352405af876dc  A25r3 rootfs.cpio.gz
+577895a748668127bfc61b6c479127fa27810c26e7777a76c8b40b34e5527c95  A25r3 FIT
+```
+
 ## 3. PipeWire DSP
 
 建议创建一个虚拟输出节点：

@@ -240,6 +240,8 @@
 - [x] A24r2/A25r2 主机候选：trigger 改为仅原子更新目标并投递 high-priority worker，20 ms settle 后重查 STOP 以禁止晚到 unmute；hw_free/close/remove/shutdown 同步取消 worker 并 SAFE；`-j16` 整核、Buildroot rootfs 复用、FIT payload 解包逐字节比较均通过
 - [x] A24r2/A25r2 RAM-only zero-PCM 回归：10 秒 playback 返回 0，factory DSP RUN→PA active→PA SAFE→DSP STANDBY 顺序完整，旧版 `scheduling while atomic`、idle-thread scheduling、softirq 异常、xrun/underrun 均未复现；本次未挂 debugfs，故没有 GPIO 快照
 - [x] 建立可复现 ARMv7 Buildroot rootfs：Buildroot 2026.05.1、Linux 6.18.34 UAPI headers、musl、D-Bus、BlueZ 5.79（A2DP/AVRCP）、BlueALSA 4.3.1、SBC、alsa-lib/alsa-utils、`bluetoothctl`；`-j16` 完整构建、ARM hard-float ELF、cpio 内容、严格固件白名单和 `legal-info` 均已主机验证
+- [x] A25r2 A2DP 注册失败定位：BlueZ 已看到 SBC endpoint，但 BlueALSA 4.3.1 的 `RegisterApplication` 超时；首轮连接随后以 reason 2 断开，不能算有效播放链
+- [x] 构建 A25r3 主机候选：最小回移 BlueALSA 上游 endpoint-first 注册顺序，`-j16` 增量构建、固件/ARM ELF 审计和 FIT 三 payload 逐字节比较均通过
 - [ ] RAM-only 验证 BlueZ A2DP Sink：配对、连接、`bluealsa-aplay`→`hw:0,0`、真实音频、暂停/断连/播放器崩溃自动静音、重连、四核和无线共存；普通 ALSA zero-PCM 与自动 PA 已通过，通过完整链路前不写 rootfs 到 eMMC
 - [ ] 对原厂 Android 音频做同硬件 idle-noise A/B，并从原厂 kernel/module/用户态音频配置提取 AK7755 与 TPA3118 初始化证据；优先核对 Lineout1 输出级、功放增益/输入网络相关设置，不再盲调 PCM 格式
 - [ ] 提取 AK7755 原厂寄存器写序列

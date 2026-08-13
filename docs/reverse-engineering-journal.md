@@ -7214,3 +7214,42 @@ FACTORY DSP STANDBY verified
 隔离。此次 shell 没有先挂载 debugfs，因此 `/sys/kernel/debug/gpio` 不存在，不能把 GPIO 电平写成
 本轮证据；但 RUN/SAFE/STANDBY 内核合同和干净的错误筛选均已记录。下一步允许进入 RAM-only
 BlueZ 配对和 SBC A2DP 真实播放，仍不写 eMMC rootfs。
+
+### Audio A25r2 A2DP 注册超时与 A25r3 endpoint-first 候选（2026-08-13）
+
+用户在 A25r2 中配对手机时，`bluetoothd` 确认两个 SBC Sink endpoint 已注册，但 BlueALSA 最终
+报告 `Couldn't register media application: Timeout was reached`。更早一次尝试的 syslog 还记录
+endpoint `org.freedesktop.DBus.Error.NoReply`，随后手机以 reason 2 断开；当时 D-Bus、BlueALSA
+和 bluealsa-aplay 仍存活，而 bluetoothd 已退出。一次中间诊断误传 `--loglevel=debug`，BlueALSA
+因只接受 error/warning/info 而退出，该轮断线不能作为协议证据，已与上述有效日志分开。
+
+BlueALSA 4.3.1 `src/bluez.c` 的本地源码确认 `bluez_adapter_new()` 先调用
+`bluez_register_media_application()`，后调用 `bluez_register_a2dp_all()`。当前上游则在发送
+`RegisterApplication` 前先导出 endpoint。来源是 maintainer Arkadiusz Bokowy，2026-01-27，
+提交 [`894ebe68f69984ebd5d89def72cd0283a870c09b`](https://github.com/arkq/bluez-alsa/commit/894ebe68f69984ebd5d89def72cd0283a870c09b)。
+项目只回移其中的注册顺序，而不整体升级版本。日志与源码共同支持“BlueZ 首次 ObjectManager
+快照看不到 endpoint，导致注册等待”的推断；它仍需 A25r3 实机 A/B 才能升级为已验证根因。
+
+复现构建命令：
+
+```sh
+make -C build/buildroot-r1-bluealsa-6.18 \
+  BR2_EXTERNAL="$PWD/buildroot-external/r1" bluez-alsa-dirclean
+JOBS=16 scripts/build-r1-bluealsa-rootfs.sh
+scripts/build-r1-bluealsa-fit-a25r3.sh
+```
+
+Buildroot 通过 `BR2_GLOBAL_PATCH_DIR` 应用
+`buildroot-external/r1/patches/bluez-alsa/0001-bluez-export-a2dp-endpoints-before-registering-app.patch`。
+完整增量构建成功；FIT 脚本确认 `/init`、四个服务、BlueZ/BlueALSA ARM32 hard-float ELF、九个
+白名单 firmware target 均存在，并将 kernel/rootfs/DTB 从 FIT 抽出逐字节比较：
+
+```text
+32e28c812ac57eb242a182cb39c3d1e686c37c03a8a8b386687352405af876dc  rootfs.cpio.gz
+577895a748668127bfc61b6c479127fa27810c26e7777a76c8b40b34e5527c95  r1-linux-mainline-6.18-ak7755-bluealsa-a25r3.itb (20,281,892 B)
+```
+
+以上仅为主机候选。下一步仍是 RAM-only DFU；成功标准首先是四个 daemon 持续存活、没有
+`RegisterApplication` timeout/NoReply，再进行配对、SBC 播放、暂停/断连/进程退出 fail-safe 与
+四核/Wi-Fi 共存。默认 `scripts/usb-dfu-r1-linux.py` 已 hash-pinned 到 A25r3；该阶段不写 eMMC
+rootfs。
