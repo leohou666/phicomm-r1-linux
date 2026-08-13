@@ -7277,3 +7277,32 @@ bluetoothd 在 AVDTP connection-lost/discover 收尾附近退出，而 D-Bus、B
 第二台能够连接并播放。该结论为用户实机确认；第一台播放与暂停的 transport/内核日志是直接设备
 证据。当前已完成 BlueZ 配对、SBC 真实播放和串行换机；尚未完成双设备同时连接/抢占、播放器进程
 崩溃自动 SAFE、daemon 监督重启及播放期间 Wi-Fi/四核共存，因此仍不把 rootfs 写入 eMMC。
+
+### Audio A25r4 单实例 supervisor 主机候选（2026-08-13）
+
+A25r3 的串行换机已经通过，但一次双设备失败现场残留三个手工 `bluealsa-aplay`，无法区分 daemon
+污染与 BlueZ 多设备行为。A25r4 删除独立 `S45bluealsa`/`S50bluealsa-aplay`，新增一个 SysV
+入口与 `r1-bluealsa-supervisor`。它等待 D-Bus/bluetoothd，启动并探测 BlueALSA D-Bus 服务，只
+维持一个通配播放器；播放器退出时回收并重启，依赖或 BlueALSA 退出时重建整组。启动时清理遗留
+手工实例，避免增量 rootfs 或人工诊断继续污染结果。用户态不直接控制功放；播放器 fd 关闭仍走
+A24r2 的内核 SAFE/STANDBY 合同。
+
+复现命令：
+
+```sh
+JOBS=16 scripts/build-r1-bluealsa-rootfs.sh
+scripts/build-r1-bluealsa-fit-a25r4.sh
+```
+
+主机验证包括：旧服务从 target/cpio 消失；新 init/supervisor 可执行并通过 `sh -n`；板级 Wi-Fi
+NVRAM、CLM、BT HCD、regulatory 与 AK7755 三个 data2 文件存在；BusyBox、BlueZ 与 BlueALSA
+程序均为 ARM32 hard-float ELF；FIT 解出的 kernel/rootfs/DTB 与输入逐字节一致；总长未超过
+64 MiB RAM DFU alternate。产物为：
+
+```text
+27c196a7cfaca1ecbbdd078cebd0cf3d1d4c0df037533a029333c3d4cc04996e  rootfs.cpio.gz (6,957,504 B)
+236cfed1aa1b880102e7363a762986061dd20487be49b8b5dfe64f145fb72da4  r1-linux-mainline-6.18-ak7755-bluealsa-a25r4.itb (20,282,292 B)
+```
+
+默认 DFU 下载器已 hash-pinned 到 A25r4。该阶段没有修改 eMMC；下一步必须 RAM-only 在真实播放中
+杀死受管播放器，验证旧 PID 消失、新 PID 唯一、PA SAFE/DSP STANDBY 先发生且播放能够恢复。

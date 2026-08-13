@@ -21,9 +21,9 @@ from desktop_notify import notify
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FIT = (
     ROOT
-    / "build/artifacts/r1-linux-mainline-6.18-ak7755-bluealsa-a25r3.itb"
+    / "build/artifacts/r1-linux-mainline-6.18-ak7755-bluealsa-a25r4.itb"
 )
-DEFAULT_FIT_SHA256 = "577895a748668127bfc61b6c479127fa27810c26e7777a76c8b40b34e5527c95"
+DEFAULT_FIT_SHA256 = "236cfed1aa1b880102e7363a762986061dd20487be49b8b5dfe64f145fb72da4"
 
 
 def sha256(path: Path) -> str:

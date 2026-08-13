@@ -82,8 +82,10 @@ send 64 MiB.  Always reject a generated FIT larger than `0x04000000` bytes.
 
 ## First boot
 
-The service order is D-Bus (`S30`), `bluetoothd` (`S40`), BlueALSA (`S45`) and
-`bluealsa-aplay` (`S50`).  Run the persistent pairing agent on the UART console:
+The service order is D-Bus (`S30`), `bluetoothd` (`S40`) and the R1 audio-stack
+supervisor (`S45`).  The supervisor waits for both dependencies, owns exactly
+one BlueALSA and one `bluealsa-aplay`, and restarts the ALSA consumer if it
+exits.  Run the persistent pairing agent on the UART console:
 
 ```sh
 r1-bluetooth-pair

@@ -1151,6 +1151,23 @@ bluetoothd 退出。现场同时存在三个重复手工启动的 `bluealsa-apla
 双设备并存失败证据，不能归咎于 PCM/AK7755。产品化服务必须保证每个 daemon 单实例；是否支持
 双手机同时连接、如何仲裁 active source，留作独立策略与稳定性测试。
 
+A25r4 先消除上述测试污染源。原先彼此独立的 `S45bluealsa` 与 `S50bluealsa-aplay` 已删除，改由
+`S45r1-bluealsa-stack` 启动唯一的 `r1-bluealsa-supervisor`。supervisor 等待 D-Bus 和 bluetoothd
+存活后启动 BlueALSA，使用 `bluealsa-aplay -L` 确认 D-Bus 服务就绪，再启动一个通配地址的
+`bluealsa-aplay`；播放器退出会被回收并重新启动，依赖或 BlueALSA 消失则整组安全重建。启动时会
+清理遗留的手工 BlueALSA/播放器进程，避免一次启动内继续累积实例。ALSA fd 关闭仍由已验证的
+A24r2 内核状态机先执行 PA mute/shutdown 与 DSP standby，用户态 supervisor 不直接操作 GPIO。
+
+主机以 `JOBS=16 scripts/build-r1-bluealsa-rootfs.sh` 完成增量构建。A25r4 构建器确认旧 S45/S50
+不存在，新服务可执行且通过 `sh -n`，全部固件/ARM hard-float ELF 存在，FIT 三 payload 逐字节
+匹配且总长小于 64 MiB。以下结论仍是主机候选；自动 SAFE 与重启必须在真实播放中杀死播放器后
+由 R1 日志验证。
+
+```text
+27c196a7cfaca1ecbbdd078cebd0cf3d1d4c0df037533a029333c3d4cc04996e  A25r4 rootfs.cpio.gz
+236cfed1aa1b880102e7363a762986061dd20487be49b8b5dfe64f145fb72da4  A25r4 FIT
+```
+
 ## 3. PipeWire DSP
 
 建议创建一个虚拟输出节点：

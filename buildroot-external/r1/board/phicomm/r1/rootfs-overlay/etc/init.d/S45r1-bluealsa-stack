@@ -1,29 +1,34 @@
 #!/bin/sh
 
-DAEMON=bluealsa
-EXEC=/usr/bin/bluealsa
+DAEMON=r1-bluealsa-supervisor
+EXEC=/usr/sbin/$DAEMON
 PIDFILE=/var/run/$DAEMON.pid
-BLUEALSA_ARGS="-p a2dp-sink"
+LOGFILE=/var/log/$DAEMON.log
 
-# shellcheck source=/dev/null
-[ -r /etc/default/bluealsa ] && . /etc/default/bluealsa
-
-start() {
+start()
+{
 	printf 'Starting %s: ' "$DAEMON"
-	# shellcheck disable=SC2086
+	if start-stop-daemon --stop --test --quiet --pidfile "$PIDFILE"; then
+		echo already-running
+		return 0
+	fi
+	rm -f "$PIDFILE"
 	start-stop-daemon --start --background --make-pidfile \
-		--pidfile "$PIDFILE" --exec "$EXEC" -- $BLUEALSA_ARGS
+		--pidfile "$PIDFILE" --exec "$EXEC" --output "$LOGFILE"
 	status=$?
 	[ "$status" -eq 0 ] && echo OK || echo FAIL
 	return "$status"
 }
 
-stop() {
+stop()
+{
 	printf 'Stopping %s: ' "$DAEMON"
-	start-stop-daemon --stop --pidfile "$PIDFILE" --exec "$EXEC"
+	start-stop-daemon --stop --pidfile "$PIDFILE"
 	status=$?
-	while start-stop-daemon --stop --test --quiet \
-		--pidfile "$PIDFILE" --exec "$EXEC"; do
+	count=0
+	while start-stop-daemon --stop --test --quiet --pidfile "$PIDFILE"; do
+		[ "$count" -lt 50 ] || break
+		count=$((count + 1))
 		sleep 0.1
 	done
 	rm -f "$PIDFILE"
