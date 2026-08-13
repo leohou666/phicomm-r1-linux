@@ -7253,3 +7253,27 @@ Buildroot 通过 `BR2_GLOBAL_PATCH_DIR` 应用
 `RegisterApplication` timeout/NoReply，再进行配对、SBC 播放、暂停/断连/进程退出 fail-safe 与
 四核/Wi-Fi 共存。默认 `scripts/usb-dfu-r1-linux.py` 已 hash-pinned 到 A25r3；该阶段不写 eMMC
 rootfs。
+
+### Audio A25r3 SBC 播放与串行换机实机通过（2026-08-13）
+
+A25r3 实机不再出现 BlueALSA `RegisterApplication` timeout/NoReply。手机完成
+Bonded/Paired/ServicesResolved 后，SBC transport 从 pending 进入 active；内核日志同步出现：
+
+```text
+FACTORY DSP RUN verified
+PCM playback active: amplifier settled and unmuted
+```
+
+用户确认手机真实音乐已从 R1 扬声器播放。暂停后 transport 回 idle，内核依次打印
+`PCM playback stopped: mute+shutdown asserted` 和 `FACTORY DSP STANDBY verified`，证明普通媒体流也
+遵守 A24r2 的 fail-safe 合同。由此把 A25r2 的注册顺序假说升级为 R1 A/B 已验证修复。
+
+随后一次直接接入第二台手机失败，但现场并非普通换机：第一台只暂停、BR/EDR 仍连接，旧 transport
+保持 idle；同时由于前序诊断重复手工启动，系统中存在三个 `bluealsa-aplay`。第二 transport 建立后
+bluetoothd 在 AVDTP connection-lost/discover 收尾附近退出，而 D-Bus、BlueALSA 和内核仍正常。
+该结果记录为受污染的双设备并存失败证据，不据此修改 codec、machine driver 或内核蓝牙链。
+
+清理边界后，用户按“主动断开第一台并等待 transport 删除，再连接第二台”的串行流程重试，确认
+第二台能够连接并播放。该结论为用户实机确认；第一台播放与暂停的 transport/内核日志是直接设备
+证据。当前已完成 BlueZ 配对、SBC 真实播放和串行换机；尚未完成双设备同时连接/抢占、播放器进程
+崩溃自动 SAFE、daemon 监督重启及播放期间 Wi-Fi/四核共存，因此仍不把 rootfs 写入 eMMC。

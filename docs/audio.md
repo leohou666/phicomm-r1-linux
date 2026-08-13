@@ -1132,14 +1132,24 @@ A25r2 FIT 为 20,281,340 B，超过旧 16 MiB DFU alternate，因此只扩大 RA
 [`894ebe68`](https://github.com/arkq/bluez-alsa/commit/894ebe68f69984ebd5d89def72cd0283a870c09b)
 采用先导出全部 A2DP endpoint、再注册 media application 的顺序。A25r3 只回移这项顺序，不整体
 升级 BlueALSA；Buildroot 通过 `BR2_GLOBAL_PATCH_DIR` 应用补丁。`-j16` 增量构建、固件白名单、
-ARM hard-float ELF 和 FIT payload 检查均通过。该因果关系目前是由日志和源码支持的推断，A25r3
-仍需实机确认 `RegisterApplication` 不再超时后才能视作修复。默认 DFU 下载器已 hash-pinned 到
-A25r3。
+ARM hard-float ELF 和 FIT payload 检查均通过。A25r3 实机不再出现 `RegisterApplication`
+timeout/NoReply，SBC transport 成功进入 active 并实际播放，因此该注册顺序修复已通过 R1 A/B。
+默认 DFU 下载器已 hash-pinned 到 A25r3。
 
 ```text
 32e28c812ac57eb242a182cb39c3d1e686c37c03a8a8b386687352405af876dc  A25r3 rootfs.cpio.gz
 577895a748668127bfc61b6c479127fa27810c26e7777a76c8b40b34e5527c95  A25r3 FIT
 ```
+
+A25r3 的真实媒体链已验证：手机完成 Bonded/Paired/ServicesResolved，SBC transport 从 pending 进入
+active，内核依次打印 factory DSP RUN 与 PA active，用户确认真实音乐有声；手机暂停后 transport
+回 idle，PA mute+shutdown 与 DSP STANDBY 均出现。随后用户先主动断开第一台手机，再连接第二台，
+第二台同样能够播放。这证明普通的串行换机成立。
+
+一次失败尝试不是串行换机：第一台只暂停、BR/EDR 仍连接且 `fd0` idle 时，第二台创建 `fd1` 后
+bluetoothd 退出。现场同时存在三个重复手工启动的 `bluealsa-aplay`，故该轮只保留为受污染的
+双设备并存失败证据，不能归咎于 PCM/AK7755。产品化服务必须保证每个 daemon 单实例；是否支持
+双手机同时连接、如何仲裁 active source，留作独立策略与稳定性测试。
 
 ## 3. PipeWire DSP
 

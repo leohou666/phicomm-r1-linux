@@ -451,8 +451,9 @@ Audio A24 首次上板确认普通 playback 确实拉起 factory DSP 与功放�
 固件不进入仓库，只能经 SHA-256 白名单 manifest 注入。A25r2 FIT 已在主机解包逐字节比对；
 10 秒 zero-PCM 实机回归已确认 STOP 修复，不再出现 atomic-sleep/softirq 警告。A25r2 配对时
 BlueZ 虽已看到 SBC endpoint，BlueALSA 4.3.1 的 media application 注册仍超时，连接继而断开。
-A25r3 已最小回移上游 endpoint-first 注册顺序并完成主机构建/FIT 审计，尚待实机确认；真实播放
-和异常收口未通过前，不能称为可用蓝牙音频系统。
+A25r3 已最小回移上游 endpoint-first 注册顺序并通过实机：SBC transport active、真实音乐有声，
+暂停后 PA SAFE/DSP STANDBY，主动断开第一台后第二台也可连接播放。双设备同时保持连接时的抢占
+策略、播放器崩溃收口及无线共存尚未验证，仍不能提前称为完整可用系统。
 
 ## 已完成阶段
 
@@ -509,7 +510,7 @@ A25r3 已最小回移上游 endpoint-first 注册顺序并完成主机构建/FIT
 11. clean 四核 v9 已用修正后的 INTID55 cleanup SPL 实机通过。白名单救援 v11 的最小-DT A 线四核正常，完整 eMMC DT 的 B1/B2 都只读枚举成功但 CPU1–CPU3 未 online；B2 已否定 arch-timer，C2 又否定 Cortex-A7 814220 单变量。C1 用同一完整 B2 DT/initramfs 换回 multi_v7 v9 后四核与 eMMC 同时通过，现作为外设工作基线；B3 CRU A/B 延后到最小化阶段。
 12. 已从 C1 构建 USB Host A1，但用户确认成品没有可用 USB 外设口，该支线已降级为 SoC/DFU 研究产物；板载 SDIO Wi-Fi、UART Bluetooth（含 BCM4345C0 HCD build 0124、AES/CMAC）均已实机通过。
 13. eMMC A5 常驻开源启动链已经写后读回并冷启动通过；Linux 仍只经 U-Boot DFU 装入 RAM。Linux 6.18.42 Audio A7r2 已把 playback/capture、无线、DMA、DSP、四核和功放安全检查收敛成单命令并实机通过 60 秒共存验证；capture 目前仅见 1-LSB 级活动，真实麦克风/routing 仍待 A/B。不写 eMMC、不解除功放、不播放非零音频。
-14. A23 原厂 DSP 路由已由用户确认低底噪并完成回归。A24r2/A25r2 已解决 PL330 tasklet STOP 中睡眠并通过 zero-PCM；随后实机把首个 A2DP 卡点定位为 BlueALSA 4.3.1 在 endpoint 导出前注册 application 导致超时。A25r3 已最小回移上游 endpoint-first 顺序并完成主机审计，下一步 RAM-only 重测配对和 SBC 播放，暂不写 eMMC rootfs。
+14. A23 原厂 DSP 路由已由用户确认低底噪并完成回归。A24r2 解决 PL330 tasklet STOP 中睡眠；A25r3 又修复 BlueALSA endpoint/application 注册顺序，现已实机完成 BlueZ 配对、SBC 真实播放、暂停安全收口和主动断开后的第二手机串行接管。下一步收敛 daemon 单实例/自动重启并测试播放器崩溃、双设备策略与 Wi-Fi/四核共存，暂不写 eMMC rootfs。
 
 ## 文档导航
 
@@ -629,7 +630,7 @@ A25r3 已最小回移上游 endpoint-first 注册顺序并完成主机构建/FIT
 | `build/buildroot-r1-bluealsa-6.18/images/rootfs.cpio.gz` | A25r3 Buildroot 2026.05.1 ARMv7 hard-float/musl 用户态：BlueZ 5.79、BlueALSA 4.3.1 + endpoint-first 注册补丁、SBC 与 ALSA；6,957,094 B，SHA-256 `32e28c812ac57eb242a182cb39c3d1e686c37c03a8a8b386687352405af876dc`；专有固件仅由本地 SHA manifest 注入。 |
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-bluealsa-a25.itb` | A25 失败证据：用户态服务均存活，但沿用 A24 内核并在 zero-PCM STOP 时触发 atomic-sleep BUG；不得继续用于播放。 |
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-bluealsa-a25r2.itb` | A25r2 失败证据：zero-PCM 与自动 PA 已通过，但 A2DP endpoint 出现后 BlueALSA `RegisterApplication` 超时、连接断开；不再作为当前候选。 |
-| `build/artifacts/r1-linux-mainline-6.18-ak7755-bluealsa-a25r3.itb` | A25r3 RAM-only 候选：最小回移上游 endpoint-first 注册顺序；固件、ARM ELF、三个 FIT payload 和 64 MiB 上限均已主机核验。20,281,892 B，SHA-256 `577895a748668127bfc61b6c479127fa27810c26e7777a76c8b40b34e5527c95`；尚待实机。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-bluealsa-a25r3.itb` | A25r3 RAM-only 已验证：endpoint-first 修复后完成配对、SBC transport active、真实音乐播放、暂停 SAFE/STANDBY，以及主动断开第一台后的第二手机串行接管。20,281,892 B，SHA-256 `577895a748668127bfc61b6c479127fa27810c26e7777a76c8b40b34e5527c95`；双设备并存与异常收口仍待测。 |
 
 ## 安全边界
 

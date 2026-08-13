@@ -148,9 +148,9 @@
 - [x] 创建 `hci0`
 - [x] Bluetooth management A1r8：controller info、power on、BR/EDR inquiry、LE scan 及 Wi-Fi 5 GHz/四核共存已实机通过
 - [x] Bluetooth management A1r9：`CONFIG_CRYPTO_AES=y` 实机消除 CMAC context 错误，power/LE scan/settings 均通过
-- [ ] BlueZ 配对
+- [x] BlueZ 配对
 - [ ] PipeWire A2DP Sink
-- [ ] SBC 播放
+- [x] SBC 播放
 - [ ] AAC 播放
 - [ ] LDAC 播放
 - [ ] 自动信任与重连
@@ -242,6 +242,8 @@
 - [x] 建立可复现 ARMv7 Buildroot rootfs：Buildroot 2026.05.1、Linux 6.18.34 UAPI headers、musl、D-Bus、BlueZ 5.79（A2DP/AVRCP）、BlueALSA 4.3.1、SBC、alsa-lib/alsa-utils、`bluetoothctl`；`-j16` 完整构建、ARM hard-float ELF、cpio 内容、严格固件白名单和 `legal-info` 均已主机验证
 - [x] A25r2 A2DP 注册失败定位：BlueZ 已看到 SBC endpoint，但 BlueALSA 4.3.1 的 `RegisterApplication` 超时；首轮连接随后以 reason 2 断开，不能算有效播放链
 - [x] 构建 A25r3 主机候选：最小回移 BlueALSA 上游 endpoint-first 注册顺序，`-j16` 增量构建、固件/ARM ELF 审计和 FIT 三 payload 逐字节比较均通过
+- [x] A25r3 单设备真实播放与串行换机：A2DP transport active 后出现 FACTORY DSP RUN、PA active 且真实音乐可闻；暂停得到 PA SAFE/DSP STANDBY；主动断开第一台后第二台可连接并播放
+- [ ] 双设备并存/抢占：第一台仅暂停且仍连接时接入第二台，第二 transport 随即丢失且 bluetoothd 退出；该轮还残留三个手工启动的 `bluealsa-aplay`，须在单实例环境复现后再判断 BlueZ 双设备问题
 - [ ] RAM-only 验证 BlueZ A2DP Sink：配对、连接、`bluealsa-aplay`→`hw:0,0`、真实音频、暂停/断连/播放器崩溃自动静音、重连、四核和无线共存；普通 ALSA zero-PCM 与自动 PA 已通过，通过完整链路前不写 rootfs 到 eMMC
 - [ ] 对原厂 Android 音频做同硬件 idle-noise A/B，并从原厂 kernel/module/用户态音频配置提取 AK7755 与 TPA3118 初始化证据；优先核对 Lineout1 输出级、功放增益/输入网络相关设置，不再盲调 PCM 格式
 - [ ] 提取 AK7755 原厂寄存器写序列
