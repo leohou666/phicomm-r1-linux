@@ -238,8 +238,9 @@
 - [x] A23 回归由用户确认“没问题”：按给定链覆盖 60 秒 zero PCM、四核、Wi-Fi、Bluetooth LE 与最终功放安全状态；本轮没有粘贴逐项输出，证据类型保留为用户确认，不伪造具体计数/退出码
 - [x] A24 首次 RAM-only 验证定位失败边界：zero PCM 无声属预期，factory DSP RUN、PA enable/unmute、最终 SAFE 和四个 BlueZ/BlueALSA daemon 均有实机证据；但 PL330 tasklet 的 drain STOP 进入旧 trigger 内 `msleep()`，稳定触发 `scheduling while atomic`，旧 A24/A25 不再作为候选
 - [x] A24r2/A25r2 主机候选：trigger 改为仅原子更新目标并投递 high-priority worker，20 ms settle 后重查 STOP 以禁止晚到 unmute；hw_free/close/remove/shutdown 同步取消 worker 并 SAFE；`-j16` 整核、Buildroot rootfs 复用、FIT payload 解包逐字节比较均通过
+- [x] A24r2/A25r2 RAM-only zero-PCM 回归：10 秒 playback 返回 0，factory DSP RUN→PA active→PA SAFE→DSP STANDBY 顺序完整，旧版 `scheduling while atomic`、idle-thread scheduling、softirq 异常、xrun/underrun 均未复现；本次未挂 debugfs，故没有 GPIO 快照
 - [x] 建立可复现 ARMv7 Buildroot rootfs：Buildroot 2026.05.1、Linux 6.18.34 UAPI headers、musl、D-Bus、BlueZ 5.79（A2DP/AVRCP）、BlueALSA 4.3.1、SBC、alsa-lib/alsa-utils、`bluetoothctl`；`-j16` 完整构建、ARM hard-float ELF、cpio 内容、严格固件白名单和 `legal-info` 均已主机验证
-- [ ] RAM-only 验证普通 ALSA 与 BlueZ A2DP Sink：配对、连接、`bluealsa-aplay`→`hw:0,0`、暂停/断连/播放器崩溃自动静音、重连、四核和无线共存；通过前不写 rootfs 到 eMMC
+- [ ] RAM-only 验证 BlueZ A2DP Sink：配对、连接、`bluealsa-aplay`→`hw:0,0`、真实音频、暂停/断连/播放器崩溃自动静音、重连、四核和无线共存；普通 ALSA zero-PCM 与自动 PA 已通过，通过完整链路前不写 rootfs 到 eMMC
 - [ ] 对原厂 Android 音频做同硬件 idle-noise A/B，并从原厂 kernel/module/用户态音频配置提取 AK7755 与 TPA3118 初始化证据；优先核对 Lineout1 输出级、功放增益/输入网络相关设置，不再盲调 PCM 格式
 - [ ] 提取 AK7755 原厂寄存器写序列
 - [ ] 提取 PRAM/CRAM/OFREG/ACRAM 数据

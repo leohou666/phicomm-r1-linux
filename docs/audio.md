@@ -1089,7 +1089,10 @@ sleep。worker 在进程上下文执行 safe→enable→等待 20 ms→unmute �
 settle 结束前会再次检查目标状态，STOP 若在等待期间到达就保持 SAFE，不允许晚到 unmute。
 hw_free、close、诊断 gate、remove 和 shutdown 会同步取消 worker 后强制 SAFE。capture 仍不控制 PA，
 普通 PCM 与 misc 诊断 gate 仍严格互斥。该 r2 修复已完成 `-j16` 整核构建和 FIT 解包，尚待实机
-确认不再出现 atomic-sleep 警告。
+确认不再出现 atomic-sleep 警告。随后 A25r2 实机播放 10 秒 zero PCM 返回 0，日志依次出现
+FACTORY DSP RUN、PA active、PA mute+shutdown、FACTORY DSP STANDBY；旧版 atomic-sleep、idle-thread
+scheduling、softirq 异常及 xrun/underrun 均未复现。该修复边界现已通过。此次命令没有先挂载
+debugfs，因而没有 GPIO 快照；状态结论来自完整内核日志，下一步仍要在真实 A2DP 播放时复核 GPIO。
 
 A25 不再把完整用户态塞入救援 initramfs。`buildroot-external/r1/` 固定 Buildroot 2026.05.1，
 以 Linux 6.18.34 UAPI headers 自建 Cortex-A7 EABI hard-float/musl 工具链，生成 BusyBox SysV
@@ -1115,8 +1118,8 @@ f78f5d12eac1c4524e4deb49b1ab280227415a9034e8be0681f6a48a2b0c7315  A25 rootfs.cpi
 ```
 
 A25r2 FIT 为 20,281,340 B，超过旧 16 MiB DFU alternate，因此只扩大 RAM transfer ceiling 为
-64 MiB；这不写 eMMC，也不改变常驻 OP-TEE/U-Boot。下一步先 RAM-only 验证普通 ALSA 自动 PA，
-再运行配对 agent 和 SBC A2DP Sink；配对、暂停、断连、播放器崩溃、重连和无线共存通过前，
+64 MiB；这不写 eMMC，也不改变常驻 OP-TEE/U-Boot。普通 ALSA zero-PCM 自动 PA 已通过，下一步
+运行配对 agent 和 SBC A2DP Sink；真实播放、暂停、断连、播放器崩溃、重连和无线共存通过前，
 不把 rootfs 写入 eMMC。
 
 ## 3. PipeWire DSP

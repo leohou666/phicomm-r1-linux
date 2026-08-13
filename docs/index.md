@@ -448,8 +448,9 @@ Audio A24 首次上板确认普通 playback 确实拉起 factory DSP 与功放�
 强制 SAFE。A25r2 使用 Buildroot 2026.05.1
 生成 ARMv7 hard-float/musl rootfs，固定 Linux 6.18 headers、BlueZ 5.79、BlueALSA 4.3.1 与 SBC，
 服务顺序为 D-Bus → bluetoothd → bluealsa A2DP Sink → bluealsa-aplay。专有 Wi-Fi/BT/AK7755
-固件不进入仓库，只能经 SHA-256 白名单 manifest 注入。A25r2 FIT 已在主机解包逐字节比对，
-尚未在 R1 验证 STOP 修复、配对、A2DP 播放或异常收口，不能提前称为可用蓝牙音频系统。
+固件不进入仓库，只能经 SHA-256 白名单 manifest 注入。A25r2 FIT 已在主机解包逐字节比对；
+10 秒 zero-PCM 实机回归已确认 STOP 修复，不再出现 atomic-sleep/softirq 警告。配对、真实 A2DP
+播放和异常收口尚未验证，不能提前称为可用蓝牙音频系统。
 
 ## 已完成阶段
 
@@ -506,7 +507,7 @@ Audio A24 首次上板确认普通 playback 确实拉起 factory DSP 与功放�
 11. clean 四核 v9 已用修正后的 INTID55 cleanup SPL 实机通过。白名单救援 v11 的最小-DT A 线四核正常，完整 eMMC DT 的 B1/B2 都只读枚举成功但 CPU1–CPU3 未 online；B2 已否定 arch-timer，C2 又否定 Cortex-A7 814220 单变量。C1 用同一完整 B2 DT/initramfs 换回 multi_v7 v9 后四核与 eMMC 同时通过，现作为外设工作基线；B3 CRU A/B 延后到最小化阶段。
 12. 已从 C1 构建 USB Host A1，但用户确认成品没有可用 USB 外设口，该支线已降级为 SoC/DFU 研究产物；板载 SDIO Wi-Fi、UART Bluetooth（含 BCM4345C0 HCD build 0124、AES/CMAC）均已实机通过。
 13. eMMC A5 常驻开源启动链已经写后读回并冷启动通过；Linux 仍只经 U-Boot DFU 装入 RAM。Linux 6.18.42 Audio A7r2 已把 playback/capture、无线、DMA、DSP、四核和功放安全检查收敛成单命令并实机通过 60 秒共存验证；capture 目前仅见 1-LSB 级活动，真实麦克风/routing 仍待 A/B。不写 eMMC、不解除功放、不播放非零音频。
-14. A23 原厂 DSP 路由已由用户确认低底噪并完成回归。A24/A25 首次 RAM-only 上板确认自动功放和用户态服务链启动，但暴露 PL330 tasklet STOP 中睡眠的内核 BUG；A24r2/A25r2 已改成 IRQ-safe trigger + high-priority worker 并完成主机构建/FIT 审计，下一步先在 RAM 中复测 START/STOP/close，再进行配对和 SBC A2DP Sink 播放，暂不写 eMMC rootfs。
+14. A23 原厂 DSP 路由已由用户确认低底噪并完成回归。A24/A25 首次 RAM-only 上板确认自动功放和用户态服务链启动，但暴露 PL330 tasklet STOP 中睡眠的内核 BUG；A24r2/A25r2 已改成 IRQ-safe trigger + high-priority worker，10 秒 zero-PCM 实机返回 0，RUN→SAFE→STANDBY 完整且 atomic-sleep/softirq/xrun 均未复现。下一步进行配对和 SBC A2DP Sink 真实播放，暂不写 eMMC rootfs。
 
 ## 文档导航
 
@@ -625,7 +626,7 @@ Audio A24 首次上板确认普通 playback 确实拉起 factory DSP 与功放�
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-auto-amp-a24r2.itb` | A24r2 救援候选：IRQ-safe trigger + high-priority PA worker，STOP 可取消 settle 并禁止晚到 unmute；14,351,236 B，SHA-256 `fdd0a96307a81c14d93b523b9b1060296ceba2855f3fb358ce4cbc4afed7ec2c`；三个 payload 已逐字节核验，待实机。 |
 | `build/buildroot-r1-bluealsa-6.18/images/rootfs.cpio.gz` | Buildroot 2026.05.1 ARMv7 hard-float/musl 用户态：Linux 6.18.34 headers、D-Bus、BlueZ 5.79、BlueALSA 4.3.1、SBC 与 ALSA；6,956,537 B，SHA-256 `f78f5d12eac1c4524e4deb49b1ab280227415a9034e8be0681f6a48a2b0c7315`；专有固件仅由本地 SHA manifest 注入。 |
 | `build/artifacts/r1-linux-mainline-6.18-ak7755-bluealsa-a25.itb` | A25 失败证据：用户态服务均存活，但沿用 A24 内核并在 zero-PCM STOP 时触发 atomic-sleep BUG；不得继续用于播放。 |
-| `build/artifacts/r1-linux-mainline-6.18-ak7755-bluealsa-a25r2.itb` | A25r2 RAM-only 主机候选：A24r2 kernel/DTB + 原已审计 Buildroot BlueALSA rootfs，三个 payload 已抽取逐字节比较；20,281,340 B，SHA-256 `92539648aaed0fc136221960750b5c9432a3f094f5e8ea4da0fcf3b574aadf55`；需使用 64 MiB DFU RAM alternate，待实机。 |
+| `build/artifacts/r1-linux-mainline-6.18-ak7755-bluealsa-a25r2.itb` | A25r2 RAM-only 当前候选：A24r2 kernel/DTB + 原已审计 Buildroot BlueALSA rootfs，三个 payload 已抽取逐字节比较；20,281,340 B，SHA-256 `92539648aaed0fc136221960750b5c9432a3f094f5e8ea4da0fcf3b574aadf55`；10 秒 zero-PCM 已实机通过且旧 atomic-sleep BUG 未复现，下一步验证真实 A2DP。 |
 
 ## 安全边界
 

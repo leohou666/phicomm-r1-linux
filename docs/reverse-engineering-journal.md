@@ -7185,3 +7185,32 @@ f78f5d12eac1c4524e4deb49b1ab280227415a9034e8be0681f6a48a2b0c7315  rootfs.cpio.gz
 
 以上 r2 结论仍是主机构建验证；必须先用 zero PCM 在 R1 上确认 RUN 期间 GPIO active、结束后
 SAFE，且日志中不再出现 atomic-sleep/softirq 警告，才继续真实 A2DP 音频。
+
+### Audio A24r2/A25r2 zero-PCM 实机回归通过（2026-08-13）
+
+用户经 DFU 启动 A25r2，向 `hw:0,0` 播放 10 秒、48 kHz、双声道、S16_LE 全零 PCM：
+
+```sh
+dd if=/dev/zero of=/tmp/r1-zero.pcm bs=192000 count=10
+aplay -D hw:0,0 -t raw -f S16_LE -r 48000 -c 2 /tmp/r1-zero.pcm &
+pcm_pid=$!
+wait "$pcm_pid"
+echo "pcm_rc=$?"
+dmesg | grep -Ei \
+  'FACTORY DSP|PCM playback|scheduling while atomic|bad: scheduling|softirq|xrun|underrun|BUG:'
+```
+
+实机结果 `pcm_rc=0`，并依次出现：
+
+```text
+FACTORY DSP RUN verified
+PCM playback active: amplifier settled and unmuted
+PCM playback stopped: mute+shutdown asserted
+FACTORY DSP STANDBY verified
+```
+
+旧 A24 的 `scheduling while atomic`、`bad: scheduling from the idle thread`、softirq preempt-count
+异常均未复现，也没有 xrun/underrun/BUG。由此验证 A24r2 已把 tasklet STOP 与可睡眠 PA 时序正确
+隔离。此次 shell 没有先挂载 debugfs，因此 `/sys/kernel/debug/gpio` 不存在，不能把 GPIO 电平写成
+本轮证据；但 RUN/SAFE/STANDBY 内核合同和干净的错误筛选均已记录。下一步允许进入 RAM-only
+BlueZ 配对和 SBC A2DP 真实播放，仍不写 eMMC rootfs。
