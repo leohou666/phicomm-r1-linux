@@ -55,9 +55,11 @@ struct r1_ak7755_sound {
 	struct regulator *amp_unmute;
 	struct miscdevice safety_misc;
 	struct delayed_work safety_timeout;
+	struct work_struct playback_work;
 	struct mutex safety_lock;
 	struct snd_soc_component *codec_component;
 	atomic_t safety_open;
+	atomic_t playback_requested;
 	pid_t safety_owner_tgid;
 	unsigned int pcm_open_count;
 	bool playback_open;
@@ -128,6 +130,10 @@ static int r1_audio_start_playback_locked(struct r1_ak7755_sound *sound)
 
 	/* Release TPA3118D2 SDZ while MUTE remains asserted. */
 	msleep(20);
+	if (!atomic_read(&sound->playback_requested)) {
+		ret = -ECANCELED;
+		goto err_safe;
+	}
 	ret = regulator_enable(sound->amp_unmute);
 	if (ret)
 		goto err_safe;
@@ -140,6 +146,42 @@ static int r1_audio_start_playback_locked(struct r1_ak7755_sound *sound)
 err_safe:
 	r1_audio_force_safe_locked(sound);
 	return ret;
+}
+
+static void r1_audio_playback_work(struct work_struct *work)
+{
+	struct r1_ak7755_sound *sound =
+		container_of(work, struct r1_ak7755_sound, playback_work);
+	bool requested;
+	bool was_active;
+	int ret;
+
+	requested = atomic_read(&sound->playback_requested);
+	mutex_lock(&sound->safety_lock);
+	was_active = sound->playback_active || sound->amp_enabled ||
+		     sound->amp_unmuted;
+	if (requested && !atomic_read(&sound->safety_open))
+		ret = r1_audio_start_playback_locked(sound);
+	else
+		ret = r1_audio_force_safe_locked(sound);
+	mutex_unlock(&sound->safety_lock);
+	if (!ret && !requested && was_active)
+		dev_info(sound->card.dev,
+			 "PCM playback stopped: mute+shutdown asserted\n");
+
+	if (ret && ret != -ECANCELED)
+		dev_err(sound->card.dev,
+			"failed to apply PCM amplifier state: %d\n", ret);
+
+	/* A trigger may have changed the target while the worker was sleeping. */
+	if (requested != atomic_read(&sound->playback_requested))
+		queue_work(system_highpri_wq, &sound->playback_work);
+}
+
+static void r1_audio_cancel_playback(struct r1_ak7755_sound *sound)
+{
+	atomic_set(&sound->playback_requested, 0);
+	cancel_work_sync(&sound->playback_work);
 }
 
 static void r1_audio_timeout_work(struct work_struct *work)
@@ -169,6 +211,7 @@ static int r1_audio_safety_open(struct inode *inode, struct file *file)
 	if (atomic_cmpxchg(&sound->safety_open, 0, 1))
 		return -EBUSY;
 
+	r1_audio_cancel_playback(sound);
 	cancel_delayed_work_sync(&sound->safety_timeout);
 	mutex_lock(&sound->safety_lock);
 	if (sound->pcm_open_count) {
@@ -396,6 +439,7 @@ static int r1_ak7755_prepare(struct snd_pcm_substream *substream)
 	if (substream->stream != SNDRV_PCM_STREAM_PLAYBACK)
 		return 0;
 
+	r1_audio_cancel_playback(sound);
 	mutex_lock(&sound->safety_lock);
 	if (sound->playback_diagnostic)
 		ret = 0;
@@ -411,36 +455,29 @@ static int r1_ak7755_trigger(struct snd_pcm_substream *substream, int cmd)
 {
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct r1_ak7755_sound *sound = snd_soc_card_get_drvdata(rtd->card);
-	int ret = 0;
-
 	if (substream->stream != SNDRV_PCM_STREAM_PLAYBACK)
 		return 0;
-
-	mutex_lock(&sound->safety_lock);
 	if (sound->playback_diagnostic)
-		goto out_unlock;
+		return 0;
+
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
-		ret = r1_audio_start_playback_locked(sound);
+		atomic_set(&sound->playback_requested, 1);
+		queue_work(system_highpri_wq, &sound->playback_work);
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
-		ret = r1_audio_force_safe_locked(sound);
-		if (!ret)
-			dev_info(sound->card.dev,
-				 "PCM playback stopped: mute+shutdown asserted\n");
+		atomic_set(&sound->playback_requested, 0);
+		queue_work(system_highpri_wq, &sound->playback_work);
 		break;
 	default:
-		ret = -EINVAL;
-		break;
+		return -EINVAL;
 	}
 
-out_unlock:
-	mutex_unlock(&sound->safety_lock);
-	return ret;
+	return 0;
 }
 
 static int r1_ak7755_hw_free(struct snd_pcm_substream *substream)
@@ -451,6 +488,7 @@ static int r1_ak7755_hw_free(struct snd_pcm_substream *substream)
 
 	if (substream->stream != SNDRV_PCM_STREAM_PLAYBACK)
 		return 0;
+	r1_audio_cancel_playback(sound);
 	mutex_lock(&sound->safety_lock);
 	if (!sound->playback_diagnostic)
 		ret = r1_audio_force_safe_locked(sound);
@@ -463,6 +501,8 @@ static void r1_ak7755_pcm_shutdown(struct snd_pcm_substream *substream)
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct r1_ak7755_sound *sound = snd_soc_card_get_drvdata(rtd->card);
 
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+		r1_audio_cancel_playback(sound);
 	mutex_lock(&sound->safety_lock);
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		if (!sound->playback_diagnostic)
@@ -536,8 +576,6 @@ static int r1_ak7755_probe(struct platform_device *pdev)
 	sound->link.num_platforms = 1;
 	sound->link.init = r1_ak7755_link_init;
 	sound->link.ops = &r1_ak7755_ops;
-	/* trigger() uses regulators and msleep(), so ALSA must call it sleepably. */
-	sound->link.nonatomic = 1;
 	sound->link.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
 				     SND_SOC_DAIFMT_CBP_CFP;
 
@@ -550,7 +588,9 @@ static int r1_ak7755_probe(struct platform_device *pdev)
 	snd_soc_card_set_drvdata(&sound->card, sound);
 	mutex_init(&sound->safety_lock);
 	atomic_set(&sound->safety_open, 0);
+	atomic_set(&sound->playback_requested, 0);
 	INIT_DELAYED_WORK(&sound->safety_timeout, r1_audio_timeout_work);
+	INIT_WORK(&sound->playback_work, r1_audio_playback_work);
 
 	sound->amp_enable = devm_regulator_get_optional(dev, "amp-enable");
 	if (IS_ERR(sound->amp_enable)) {
@@ -604,6 +644,7 @@ static void r1_ak7755_remove(struct platform_device *pdev)
 		return;
 
 	misc_deregister(&sound->safety_misc);
+	r1_audio_cancel_playback(sound);
 	cancel_delayed_work_sync(&sound->safety_timeout);
 	mutex_lock(&sound->safety_lock);
 	r1_audio_force_safe_locked(sound);
@@ -617,6 +658,7 @@ static void r1_ak7755_shutdown(struct platform_device *pdev)
 	if (!sound || !sound->safety_misc.this_device)
 		return;
 
+	r1_audio_cancel_playback(sound);
 	cancel_delayed_work_sync(&sound->safety_timeout);
 	mutex_lock(&sound->safety_lock);
 	r1_audio_force_safe_locked(sound);

@@ -3,12 +3,12 @@ set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 artifacts="$project_root/build/artifacts"
-kernel="$artifacts/zImage-mainline-6.18-ak7755-auto-amp-a24"
-dtb="$artifacts/rk3229-phicomm-r1-mainline-6.18-ak7755-auto-amp-a24.dtb"
+kernel="$artifacts/zImage-mainline-6.18-ak7755-auto-amp-a24r2"
+dtb="$artifacts/rk3229-phicomm-r1-mainline-6.18-ak7755-auto-amp-a24r2.dtb"
 rootfs="$project_root/build/buildroot-r1-bluealsa-6.18/images/rootfs.cpio.gz"
-its="$project_root/scripts/r1-linux-mainline-6.18-ak7755-bluealsa-a25.its"
-fit="$artifacts/r1-linux-mainline-6.18-ak7755-bluealsa-a25.itb"
-kernel_sha=8a33477f0135f22af647b692f31abb65b9bd7c425d26ac914b2b84467d600504
+its="$project_root/scripts/r1-linux-mainline-6.18-ak7755-bluealsa-a25r2.its"
+fit="$artifacts/r1-linux-mainline-6.18-ak7755-bluealsa-a25r2.itb"
+kernel_sha=d52b3d7ebc0fa37e414b4bcc3e34d3a4b64a325f9685c28211d071491ddef115
 dtb_sha=4078b6aa84190948f9ffc289c6762645effc68c776e233664055c04be3cae2e7
 
 for tool in mkimage dumpimage cpio gzip file readelf sha256sum cmp stat; do
@@ -19,8 +19,8 @@ for tool in mkimage dumpimage cpio gzip file readelf sha256sum cmp stat; do
 done
 
 [ -f "$kernel" ] && [ -f "$dtb" ] && [ -f "$rootfs" ] || {
-	echo "Missing A24 kernel/DTB or 6.18-header Buildroot rootfs." >&2
-	echo "Run scripts/build-r1-ak7755-auto-amp-a24.sh and scripts/build-r1-bluealsa-rootfs.sh first." >&2
+	echo "Missing A24r2 kernel/DTB or 6.18-header Buildroot rootfs." >&2
+	echo "Run scripts/build-r1-ak7755-auto-amp-a24r2.sh and scripts/build-r1-bluealsa-rootfs.sh first." >&2
 	exit 1
 }
 
@@ -86,5 +86,5 @@ fit_size=$(stat -c %s "$fit")
 	exit 1
 }
 
-echo "A25 Buildroot/BlueALSA FIT verified; eMMC was not modified."
+echo "A25r2 Buildroot/BlueALSA FIT verified; eMMC was not modified."
 sha256sum "$rootfs" "$fit"

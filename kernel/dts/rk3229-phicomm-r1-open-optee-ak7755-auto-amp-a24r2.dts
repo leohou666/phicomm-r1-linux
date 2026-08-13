@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: (GPL-2.0-or-later OR MIT)
 
 /*
- * Phicomm R1 A24: factory data2 DSP route plus automatic PCM amplifier gate.
+ * Phicomm R1 A24r2: factory DSP route plus IRQ-safe automatic PCM amplifier.
  *
  * The underlying A8 hardware description keeps both TPA3118D2 controls
- * fail-closed.  A24 changes only the machine-driver ownership policy:
+ * fail-closed. A24r2 moves sleepable PA sequencing out of ALSA trigger
+ * context into a high-priority worker after A24 proved that drain completion
+ * may issue STOP from the PL330 tasklet.
  * playback owns the gates for its PCM lifecycle, capture never does, and the
  * root-only diagnostic gate remains exclusive: only its owning process may
  * open the diagnostic PCM, which bypasses automatic amplifier ownership.

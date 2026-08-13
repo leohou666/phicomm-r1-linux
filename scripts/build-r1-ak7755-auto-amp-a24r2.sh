@@ -3,9 +3,9 @@ set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 kernel_src=${KERNEL_SRC:-"$project_root/build/kernel-src"}
-kernel_build=${KERNEL_BUILD:-"$project_root/build/kernel-6.18-ak7755-auto-amp-a24"}
+kernel_build=${KERNEL_BUILD:-"$project_root/build/kernel-6.18-ak7755-auto-amp-a24r2"}
 jobs=${JOBS:-16}
-tag=mainline-6.18-ak7755-auto-amp-a24
+tag=mainline-6.18-ak7755-auto-amp-a24r2
 artifacts="$project_root/build/artifacts"
 fit="$artifacts/r1-linux-$tag.itb"
 its="$project_root/scripts/r1-linux-$tag.its"
@@ -40,8 +40,8 @@ done
 KERNEL_SRC="$kernel_src" \
 KERNEL_BUILD="$kernel_build" \
 JOBS="$jobs" \
-KERNEL_EXTRA_FRAGMENTS='kernel/config/r1-5.10-clean-4core.fragment kernel/config/r1-5.10-wifi-brcmfmac-a2.fragment kernel/config/r1-5.10-wifi-regulatory-a3.fragment kernel/config/r1-5.10-bt-rk805-clkout.fragment kernel/config/r1-5.10-bt-serdev-a1r6.fragment kernel/config/r1-5.10-bt-crypto-a1r9.fragment kernel/config/r1-6.18-ak7755-fw-a3.fragment kernel/config/r1-6.18-ak7755-dai-a4.fragment kernel/config/r1-6.18-ak7755-auto-amp-a24.fragment' \
-BOARD_DTS=kernel/dts/rk3229-phicomm-r1-open-optee-ak7755-auto-amp-a24.dts \
+KERNEL_EXTRA_FRAGMENTS='kernel/config/r1-5.10-clean-4core.fragment kernel/config/r1-5.10-wifi-brcmfmac-a2.fragment kernel/config/r1-5.10-wifi-regulatory-a3.fragment kernel/config/r1-5.10-bt-rk805-clkout.fragment kernel/config/r1-5.10-bt-serdev-a1r6.fragment kernel/config/r1-5.10-bt-crypto-a1r9.fragment kernel/config/r1-6.18-ak7755-fw-a3.fragment kernel/config/r1-6.18-ak7755-dai-a4.fragment kernel/config/r1-6.18-ak7755-auto-amp-a24r2.fragment' \
+BOARD_DTS=kernel/dts/rk3229-phicomm-r1-open-optee-ak7755-auto-amp-a24r2.dts \
 KERNEL_ARTIFACT_TAG="$tag" \
 	"$project_root/scripts/build-kernel.sh"
 
@@ -59,7 +59,7 @@ INITRAMFS_ARTIFACT_TAG="$tag" \
 
 (cd "$project_root/scripts" && mkimage -f "$(basename "$its")" "$fit")
 
-workdir=$(mktemp -d "${TMPDIR:-/tmp}/r1-ak7755-a24.XXXXXX")
+workdir=$(mktemp -d "${TMPDIR:-/tmp}/r1-ak7755-a24r2.XXXXXX")
 trap 'rm -rf "$workdir"' EXIT HUP INT TERM
 dumpimage -T flat_dt -p 0 -o "$workdir/kernel" "$fit" >/dev/null
 dumpimage -T flat_dt -p 1 -o "$workdir/ramdisk" "$fit" >/dev/null
@@ -76,7 +76,7 @@ for firmware in ak7755_pram_data2.bin ak7755_cram_data2.bin ak7755_ofreg_data2.b
 		"$workdir/lib/firmware/$firmware"
 done
 
-printf '\nA24 automatic-amplifier FIT verified. eMMC was not modified.\n'
+printf '\nA24r2 IRQ-safe automatic-amplifier FIT verified. eMMC was not modified.\n'
 sha256sum \
 	"$artifacts/zImage-$tag" \
 	"$artifacts/r1-initramfs-$tag.cpio.gz" \

@@ -1078,12 +1078,18 @@ e3bfd76b6ded8681dca29988eaf506cd4d4f3c40d6e7ba98f4ca63df11f895cd  phicomm_r1_ak7
 ### Audio A24/A25：普通 PCM 自动功放与最小 BlueALSA 用户态
 
 A24 把 A23 的 root-only 实验 gate 留作诊断兼容，同时让普通 ALSA playback 自己拥有完整 PA
-生命周期。START、RESUME、PAUSE_RELEASE 在 sleepable machine-link trigger 中同步执行
-safe→enable→等待 20 ms→unmute；STOP、SUSPEND、PAUSE_PUSH、hw_free 和 close 同步执行
-mute→等待 10 ms→shutdown。capture 不控制 PA。普通 PCM 与 misc 诊断 gate 严格互斥；只有持有
-gate 的同一 TGID 能打开用于旧工具的 diagnostic PCM，该 PCM 不重复执行自动 PA。实现设置
-`link.nonatomic=1`，没有可能在 STOP/close 后晚到的异步 unmute。当前结论仅来自源码审计、
-关键对象/整核构建和 FIT 解包，仍需 R1 实机验证 START/STOP/close/kill 的 GPIO 与听感边界。
+生命周期。首次 R1 实机 zero-PCM 验证确认 factory DSP RUN、PA enable/unmute 和最终 SAFE 都发生，
+且 D-Bus、bluetoothd、bluealsa、bluealsa-aplay 均存活；播放全零数据没有声音是预期结果，不是
+音频链路失败。但 DMA drain 在 PL330 tasklet 中调用 STOP，旧实现直接从 trigger 进入 `msleep()`，
+触发 `BUG: scheduling while atomic`。这证明 `link.nonatomic=1` 不能保证所有 STOP 来源都可睡眠，
+原 A24/A25 因而降级为失败证据。
+
+A24r2 的 trigger 只原子更新目标状态并排入 `system_highpri_wq`，不再直接碰 regulator、mutex 或
+sleep。worker 在进程上下文执行 safe→enable→等待 20 ms→unmute 或 mute→等待 10 ms→shutdown；
+settle 结束前会再次检查目标状态，STOP 若在等待期间到达就保持 SAFE，不允许晚到 unmute。
+hw_free、close、诊断 gate、remove 和 shutdown 会同步取消 worker 后强制 SAFE。capture 仍不控制 PA，
+普通 PCM 与 misc 诊断 gate 仍严格互斥。该 r2 修复已完成 `-j16` 整核构建和 FIT 解包，尚待实机
+确认不再出现 atomic-sleep 警告。
 
 A25 不再把完整用户态塞入救援 initramfs。`buildroot-external/r1/` 固定 Buildroot 2026.05.1，
 以 Linux 6.18.34 UAPI headers 自建 Cortex-A7 EABI hard-float/musl 工具链，生成 BusyBox SysV
@@ -1101,14 +1107,14 @@ libsamplerate。启动顺序为 D-Bus、bluetoothd、`bluealsa -p a2dp-sink`、
 目录构建。该失败说明 rootfs “能编译”不等于 kernel userspace ABI 选择合理。
 
 ```text
-8a33477f0135f22af647b692f31abb65b9bd7c425d26ac914b2b84467d600504  A24 zImage
+d52b3d7ebc0fa37e414b4bcc3e34d3a4b64a325f9685c28211d071491ddef115  A24r2 zImage
 4078b6aa84190948f9ffc289c6762645effc68c776e233664055c04be3cae2e7  A24 DTB
-51271abb0f7404d3f955b1052447ce100bd49155bb36e525fab7028a2c737262  A24 rescue FIT
+fdd0a96307a81c14d93b523b9b1060296ceba2855f3fb358ce4cbc4afed7ec2c  A24r2 rescue FIT
 f78f5d12eac1c4524e4deb49b1ab280227415a9034e8be0681f6a48a2b0c7315  A25 rootfs.cpio.gz
-64f2355c83e062305377b14e8bdd79ffa93bb90849f6f0b0532775f30b2de740  A25 FIT
+92539648aaed0fc136221960750b5c9432a3f094f5e8ea4da0fcf3b574aadf55  A25r2 FIT
 ```
 
-A25 FIT 为 20,281,336 B，超过旧 16 MiB DFU alternate，因此只扩大 RAM transfer ceiling 为
+A25r2 FIT 为 20,281,340 B，超过旧 16 MiB DFU alternate，因此只扩大 RAM transfer ceiling 为
 64 MiB；这不写 eMMC，也不改变常驻 OP-TEE/U-Boot。下一步先 RAM-only 验证普通 ALSA 自动 PA，
 再运行配对 agent 和 SBC A2DP Sink；配对、暂停、断连、播放器崩溃、重连和无线共存通过前，
 不把 rootfs 写入 eMMC。

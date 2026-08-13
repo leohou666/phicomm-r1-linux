@@ -7138,3 +7138,50 @@ A25 的 kernel、ramdisk、DTB 从 FIT 抽取后与源文件逐字节相同。FI
 alternate，故上板时只把 transfer ceiling 扩为 64 MiB；FIT 本身仍在 `0x6a800000`，不触碰
 OP-TEE reservation，也没有任何 eMMC 写操作。以上均为主机验证，普通 ALSA 自动 PA、BlueZ
 配对、SBC A2DP 播放及断连/崩溃收口仍待 R1 实机。
+
+### Audio A24 首次实机失败与 A24r2/A25r2 修复候选（2026-08-13）
+
+用户经 DFU 启动 A25 后确认 D-Bus、bluetoothd、bluealsa 和 bluealsa-aplay 均存活。普通 ALSA
+向 `hw:0,0` 播放 10 秒全零 PCM 时，内核打印 factory DSP RUN，GPIO 在 stream 期间显示功放
+enable/unmute，结束后回到 shutdown+mute。全零 PCM 没有声音是正确的正向结果，不能解释为播放
+链断开。
+
+真正失败发生在 stream 收尾：PL330 DMA tasklet 经 `snd_pcm_period_elapsed()` 进入 drain complete，
+随后调用 machine driver STOP trigger。A24 的 trigger 内直接取得 mutex、控制 regulator 并
+`msleep()`，因此实机出现：
+
+```text
+BUG: scheduling while atomic
+bad: scheduling from idle thread
+pl330_tasklet -> snd_pcm_period_elapsed -> r1_ak7755_trigger
+```
+
+这是直接实机证据。`link.nonatomic=1` 不能把 tasklet 发起的 STOP 变成可睡眠上下文，故旧 A24
+以及包含该内核的 A25 都降级为失败证据，不再用于实际播放。
+
+A24r2 将 trigger 改为 IRQ-safe 状态提交：START/STOP 只原子更新 `playback_requested` 并排入
+`system_highpri_wq`；worker 才在进程上下文执行 PA 时序。START 的 20 ms settle 结束后再次检查
+目标状态，若期间收到 STOP 就保持 SAFE，避免异步晚到 unmute。hw_free、close、诊断 gate、remove
+和 shutdown 都同步取消 worker 后强制 SAFE。诊断 misc owner 的 PCM 继续跳过自动 PA，capture
+继续不碰 PA。
+
+本地重建和复用既有 Buildroot rootfs 的命令为：
+
+```sh
+JOBS=16 scripts/build-r1-ak7755-auto-amp-a24r2.sh
+scripts/build-r1-bluealsa-fit-a25r2.sh
+```
+
+`-j16` 整核、DTB、两个 FIT 和 clangd compile database 均成功；A25r2 校验脚本还逐项审计
+rootfs 白名单与 ARM hard-float ELF，并将三个 FIT payload 抽出后与源文件逐字节比较：
+
+```text
+d52b3d7ebc0fa37e414b4bcc3e34d3a4b64a325f9685c28211d071491ddef115  zImage-mainline-6.18-ak7755-auto-amp-a24r2
+4078b6aa84190948f9ffc289c6762645effc68c776e233664055c04be3cae2e7  rk3229-phicomm-r1-mainline-6.18-ak7755-auto-amp-a24r2.dtb
+fdd0a96307a81c14d93b523b9b1060296ceba2855f3fb358ce4cbc4afed7ec2c  r1-linux-mainline-6.18-ak7755-auto-amp-a24r2.itb (14,351,236 B)
+f78f5d12eac1c4524e4deb49b1ab280227415a9034e8be0681f6a48a2b0c7315  rootfs.cpio.gz
+92539648aaed0fc136221960750b5c9432a3f094f5e8ea4da0fcf3b574aadf55  r1-linux-mainline-6.18-ak7755-bluealsa-a25r2.itb (20,281,340 B)
+```
+
+以上 r2 结论仍是主机构建验证；必须先用 zero PCM 在 R1 上确认 RUN 期间 GPIO active、结束后
+SAFE，且日志中不再出现 atomic-sleep/softirq 警告，才继续真实 A2DP 音频。

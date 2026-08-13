@@ -236,7 +236,8 @@
 - [x] 构建 Linux 6.18 Audio A23：codec 改为 12.288 MHz XTI 的 BCLK/LRCK provider、RK I2S2 consumer；增加 data2 OFREG 严格 size/命令头/CRC 校验，并按 A21r5 的 C3/C4、DSP DAC、双 Lineout route 与 RUN 合同逐寄存器验证；首包误选 A4 DT 导致安全 misc 设备缺失，现已改用 A8 fail-safe DT，反编译最终 DTB 确认两个 amp supply，整核/DT/initramfs/FIT 静态验证通过
 - [x] RAM-only 实机运行修正版 A23 低电平听感：`/bin/r1-audible-test` 已实际出声，用户确认“很干净”，A22 固定明显底噪没有复现；本轮未贴退出码/FACTORY DSP/最终 SAFE 日志，故只把听感目标标为完成
 - [x] A23 回归由用户确认“没问题”：按给定链覆盖 60 秒 zero PCM、四核、Wi-Fi、Bluetooth LE 与最终功放安全状态；本轮没有粘贴逐项输出，证据类型保留为用户确认，不伪造具体计数/退出码
-- [x] A24 普通 ALSA 主机候选：PCM lifecycle 已自动控制 PA；START/RESUME/PAUSE_RELEASE 同步 safe→enable→20 ms→unmute，STOP/SUSPEND/PAUSE_PUSH/hw_free/close 同步 mute→10 ms→shutdown；capture 不碰 PA，普通 PCM 与 root-only misc 诊断严格互斥，整核/FIT 解包验证通过，待 RAM-only 实机
+- [x] A24 首次 RAM-only 验证定位失败边界：zero PCM 无声属预期，factory DSP RUN、PA enable/unmute、最终 SAFE 和四个 BlueZ/BlueALSA daemon 均有实机证据；但 PL330 tasklet 的 drain STOP 进入旧 trigger 内 `msleep()`，稳定触发 `scheduling while atomic`，旧 A24/A25 不再作为候选
+- [x] A24r2/A25r2 主机候选：trigger 改为仅原子更新目标并投递 high-priority worker，20 ms settle 后重查 STOP 以禁止晚到 unmute；hw_free/close/remove/shutdown 同步取消 worker 并 SAFE；`-j16` 整核、Buildroot rootfs 复用、FIT payload 解包逐字节比较均通过
 - [x] 建立可复现 ARMv7 Buildroot rootfs：Buildroot 2026.05.1、Linux 6.18.34 UAPI headers、musl、D-Bus、BlueZ 5.79（A2DP/AVRCP）、BlueALSA 4.3.1、SBC、alsa-lib/alsa-utils、`bluetoothctl`；`-j16` 完整构建、ARM hard-float ELF、cpio 内容、严格固件白名单和 `legal-info` 均已主机验证
 - [ ] RAM-only 验证普通 ALSA 与 BlueZ A2DP Sink：配对、连接、`bluealsa-aplay`→`hw:0,0`、暂停/断连/播放器崩溃自动静音、重连、四核和无线共存；通过前不写 rootfs 到 eMMC
 - [ ] 对原厂 Android 音频做同硬件 idle-noise A/B，并从原厂 kernel/module/用户态音频配置提取 AK7755 与 TPA3118 初始化证据；优先核对 Lineout1 输出级、功放增益/输入网络相关设置，不再盲调 PCM 格式
